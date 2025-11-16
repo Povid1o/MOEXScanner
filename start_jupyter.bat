@@ -1,0 +1,9 @@
+@echo off
+echo Запуск Jupyter Lab для MOEX Scanner ML Workspace...
+echo.
+echo Активация виртуального окружения...
+call venv\Scripts\activate.bat
+echo.
+echo Запуск Jupyter Lab...
+jupyter lab --no-browser --port=8888
+pause
