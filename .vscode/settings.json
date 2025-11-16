@@ -1,0 +1,41 @@
+{
+    // Настройка Python интерпретатора для проекта
+    "python.defaultInterpreterPath": "${workspaceFolder}/ML/venv/Scripts/python.exe",
+    
+    // Автоматический выбор интерпретатора
+    "python.autoComplete.extraPaths": [
+        "${workspaceFolder}/ML"
+    ],
+    
+    // Настройки для работы с Python
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/ML",
+        "${workspaceFolder}/ML/features",
+        "${workspaceFolder}/ML/utils"
+    ],
+    
+    // Включение автодополнения
+    "python.analysis.autoImportCompletions": true,
+    "python.analysis.typeCheckingMode": "basic",
+    
+    // Настройки для Jupyter
+    "jupyter.kernels.filter": [
+        {
+            "path": "${workspaceFolder}/ML/venv/Scripts/python.exe",
+            "type": "pythonEnvironment"
+        }
+    ],
+    
+    // Настройки терминала - автоматическая активация venv
+    "terminal.integrated.env.windows": {
+        "PYTHONPATH": "${workspaceFolder}/ML"
+    },
+    
+    // Исключение venv из поиска
+    "files.exclude": {
+        "**/venv": false,
+        "**/__pycache__": true,
+        "**/*.pyc": true
+    }
+}
+

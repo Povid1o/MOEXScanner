@@ -1,0 +1,4 @@
+#на продакте добавить /src/config.go
+.go.mod
+.go.sum
+.main_with_gin.txt
