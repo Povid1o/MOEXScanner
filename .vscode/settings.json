@@ -18,14 +18,6 @@
     "python.analysis.autoImportCompletions": true,
     "python.analysis.typeCheckingMode": "basic",
     
-    // Настройки для Jupyter
-    "jupyter.kernels.filter": [
-        {
-            "path": "${workspaceFolder}/ML/venv/Scripts/python.exe",
-            "type": "pythonEnvironment"
-        }
-    ],
-    
     // Настройки терминала - автоматическая активация venv
     "terminal.integrated.env.windows": {
         "PYTHONPATH": "${workspaceFolder}/ML"
@@ -36,6 +28,9 @@
         "**/venv": false,
         "**/__pycache__": true,
         "**/*.pyc": true
-    }
+    },
+    "jupyter.kernels.excludePythonEnvironments": [
+        "${workspaceFolder}/ML/venv/Scripts/python.exe"
+    ]
 }
 
