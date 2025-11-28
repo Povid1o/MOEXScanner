@@ -1,0 +1,221 @@
+{
+  "_description": "Метаданные тикеров MOEX для глобальной ML модели",
+  "_fields": {
+    "sector": "Отраслевой сектор компании",
+    "liquidity_rank": "Рейтинг ликвидности (1 = самый ликвидный)",
+    "is_blue_chip": "Голубая фишка (1) или нет (0)",
+    "lot_size": "Размер лота на MOEX"
+  },
+  
+  "SBER": {
+    "sector": "Finance",
+    "liquidity_rank": 1,
+    "is_blue_chip": 1,
+    "lot_size": 10,
+    "name": "Сбербанк"
+  },
+  "LKOH": {
+    "sector": "OilGas",
+    "liquidity_rank": 2,
+    "is_blue_chip": 1,
+    "lot_size": 1,
+    "name": "Лукойл"
+  },
+  "GAZP": {
+    "sector": "OilGas",
+    "liquidity_rank": 3,
+    "is_blue_chip": 1,
+    "lot_size": 10,
+    "name": "Газпром"
+  },
+  "GMKN": {
+    "sector": "Mining",
+    "liquidity_rank": 4,
+    "is_blue_chip": 1,
+    "lot_size": 1,
+    "name": "Норникель"
+  },
+  "NVTK": {
+    "sector": "OilGas",
+    "liquidity_rank": 5,
+    "is_blue_chip": 1,
+    "lot_size": 1,
+    "name": "Новатэк"
+  },
+  "ROSN": {
+    "sector": "OilGas",
+    "liquidity_rank": 6,
+    "is_blue_chip": 1,
+    "lot_size": 1,
+    "name": "Роснефть"
+  },
+  "TATN": {
+    "sector": "OilGas",
+    "liquidity_rank": 7,
+    "is_blue_chip": 1,
+    "lot_size": 1,
+    "name": "Татнефть"
+  },
+  "YNDX": {
+    "sector": "Tech",
+    "liquidity_rank": 8,
+    "is_blue_chip": 1,
+    "lot_size": 1,
+    "name": "Яндекс"
+  },
+  "MTSS": {
+    "sector": "Telecom",
+    "liquidity_rank": 9,
+    "is_blue_chip": 1,
+    "lot_size": 10,
+    "name": "МТС"
+  },
+  "PLZL": {
+    "sector": "Mining",
+    "liquidity_rank": 10,
+    "is_blue_chip": 1,
+    "lot_size": 1,
+    "name": "Полюс"
+  },
+  "SNGS": {
+    "sector": "OilGas",
+    "liquidity_rank": 11,
+    "is_blue_chip": 1,
+    "lot_size": 100,
+    "name": "Сургутнефтегаз"
+  },
+  "CHMF": {
+    "sector": "Metals",
+    "liquidity_rank": 12,
+    "is_blue_chip": 1,
+    "lot_size": 1,
+    "name": "Северсталь"
+  },
+  "NLMK": {
+    "sector": "Metals",
+    "liquidity_rank": 13,
+    "is_blue_chip": 1,
+    "lot_size": 10,
+    "name": "НЛМК"
+  },
+  "MAGN": {
+    "sector": "Metals",
+    "liquidity_rank": 14,
+    "is_blue_chip": 1,
+    "lot_size": 10,
+    "name": "ММК"
+  },
+  "VTBR": {
+    "sector": "Finance",
+    "liquidity_rank": 15,
+    "is_blue_chip": 1,
+    "lot_size": 10000,
+    "name": "ВТБ"
+  },
+  "MGNT": {
+    "sector": "Retail",
+    "liquidity_rank": 16,
+    "is_blue_chip": 1,
+    "lot_size": 1,
+    "name": "Магнит"
+  },
+  "OZON": {
+    "sector": "Tech",
+    "liquidity_rank": 17,
+    "is_blue_chip": 0,
+    "lot_size": 1,
+    "name": "Озон"
+  },
+  "ALRS": {
+    "sector": "Mining",
+    "liquidity_rank": 18,
+    "is_blue_chip": 1,
+    "lot_size": 10,
+    "name": "Алроса"
+  },
+  "TCSG": {
+    "sector": "Finance",
+    "liquidity_rank": 19,
+    "is_blue_chip": 0,
+    "lot_size": 1,
+    "name": "Тинькофф"
+  },
+  "PIKK": {
+    "sector": "RealEstate",
+    "liquidity_rank": 20,
+    "is_blue_chip": 0,
+    "lot_size": 1,
+    "name": "ПИК"
+  },
+  "HYDR": {
+    "sector": "Utilities",
+    "liquidity_rank": 21,
+    "is_blue_chip": 0,
+    "lot_size": 1000,
+    "name": "РусГидро"
+  },
+  "IRAO": {
+    "sector": "Utilities",
+    "liquidity_rank": 22,
+    "is_blue_chip": 0,
+    "lot_size": 100,
+    "name": "Интер РАО"
+  },
+  "AFLT": {
+    "sector": "Transport",
+    "liquidity_rank": 23,
+    "is_blue_chip": 0,
+    "lot_size": 10,
+    "name": "Аэрофлот"
+  },
+  "FIVE": {
+    "sector": "Retail",
+    "liquidity_rank": 24,
+    "is_blue_chip": 0,
+    "lot_size": 1,
+    "name": "X5 Retail Group"
+  },
+  "RTKM": {
+    "sector": "Telecom",
+    "liquidity_rank": 25,
+    "is_blue_chip": 0,
+    "lot_size": 10,
+    "name": "Ростелеком"
+  },
+  "VKCO": {
+    "sector": "Tech",
+    "liquidity_rank": 26,
+    "is_blue_chip": 0,
+    "lot_size": 1,
+    "name": "VK"
+  },
+  "AFKS": {
+    "sector": "Conglomerate",
+    "liquidity_rank": 27,
+    "is_blue_chip": 0,
+    "lot_size": 100,
+    "name": "АФК Система"
+  },
+  "BSPB": {
+    "sector": "Finance",
+    "liquidity_rank": 28,
+    "is_blue_chip": 0,
+    "lot_size": 10,
+    "name": "Банк Санкт-Петербург"
+  },
+  "LENT": {
+    "sector": "Retail",
+    "liquidity_rank": 29,
+    "is_blue_chip": 0,
+    "lot_size": 1,
+    "name": "Лента"
+  },
+  "BELU": {
+    "sector": "Consumer",
+    "liquidity_rank": 30,
+    "is_blue_chip": 0,
+    "lot_size": 1,
+    "name": "Белуга Групп"
+  }
+}
+

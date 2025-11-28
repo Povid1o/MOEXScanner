@@ -55,7 +55,8 @@ def ensure_directories():
         BASE_DIR / 'features',
         BASE_DIR / 'backtest',
         BASE_DIR / 'explainability',
-        BASE_DIR / 'utils'
+        BASE_DIR / 'utils',
+        BASE_DIR / 'config'
     ]
     
     for directory in directories:
