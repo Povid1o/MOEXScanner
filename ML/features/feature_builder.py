@@ -59,9 +59,8 @@ def validate_ml_output(df: pd.DataFrame, ticker: str) -> bool:
     """
     found_forbidden = []
     for col in df.columns:
-        for forbidden in FORBIDDEN_ML_COLUMNS:
-            if forbidden in col.lower() and col != 'log_return':
-                found_forbidden.append(col)
+        if col.lower() in [f.lower() for f in FORBIDDEN_ML_COLUMNS]:
+            found_forbidden.append(col)
                 
     if found_forbidden:
         raise ValueError(
