@@ -24,6 +24,8 @@ sys.path.insert(0, str(current_dir.parent))
 from features.volume_features import build_volume_features, VOLUME_FEATURE_COLUMNS
 from features.trend_features import build_trend_features, TREND_FEATURE_COLUMNS
 from features.calendar_features import build_calendar_features, CALENDAR_FEATURE_COLUMNS
+from features.volatility_features import build_volatility_features, VOLATILITY_FEATURE_COLUMNS
+from features.market_features import build_market_features, load_index_data, MARKET_FEATURE_COLUMNS
 
 # Импорт конфигурации
 try:
@@ -87,7 +89,8 @@ def handle_infinities(df: pd.DataFrame) -> pd.DataFrame:
 def build_all_features(
     df: pd.DataFrame,
     ticker: str,
-    include_volatility: bool = True
+    include_volatility: bool = True,
+    index_df: Optional[pd.DataFrame] = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Главная функция: строит ВСЕ признаки и разделяет на ML/Backtest выходы.
@@ -96,6 +99,7 @@ def build_all_features(
         df: DataFrame с OHLCV и log_return
         ticker: Тикер акции
         include_volatility: Включать ли признаки волатильности из исходного df
+        index_df: DataFrame с данными индекса IMOEX (опционально, для market features)
         
     Returns:
         Tuple[ml_features, backtest_data]:
@@ -125,7 +129,20 @@ def build_all_features(
     print(f"    • Календарные признаки и Gap...")
     calendar_features = build_calendar_features(df)
     
-    # === 4. СОБИРАЕМ ML FEATURES ===
+    # === 4. ПРИЗНАКИ ВОЛАТИЛЬНОСТИ ===
+    print(f"    • Признаки волатильности...")
+    volatility_features = build_volatility_features(df)
+    
+    # === 5. РЫНОЧНЫЕ ПРИЗНАКИ (Beta, Correlation с IMOEX) ===
+    market_features = None
+    if index_df is not None and ticker != 'IMOEX':
+        print(f"    • Рыночные признаки (Beta, Correlation)...")
+        try:
+            market_features = build_market_features(df, index_df)
+        except Exception as e:
+            print(f"    ⚠️ Рыночные признаки недоступны: {e}")
+    
+    # === 6. СОБИРАЕМ ML FEATURES ===
     ml_features = pd.DataFrame(index=df.index)
     
     # Дата (для join и идентификации)
@@ -136,22 +153,22 @@ def build_all_features(
     if 'log_return' in df.columns:
         ml_features['log_return'] = df['log_return']
     
-    # Признаки волатильности (если уже есть в данных)
-    if include_volatility:
-        vol_cols = [col for col in df.columns if 'vol_' in col.lower() or 'volatility' in col.lower()]
-        for col in vol_cols:
-            if col not in FORBIDDEN_ML_COLUMNS:
-                ml_features[col] = df[col]
-    
     # Добавляем все нормализованные признаки
-    ml_features = pd.concat([
+    features_to_concat = [
         ml_features,
         volume_features,
         trend_features,
-        calendar_features
-    ], axis=1)
+        calendar_features,
+        volatility_features
+    ]
     
-    # === 5. ДОБАВЛЯЕМ МЕТАДАННЫЕ ТИКЕРА ===
+    # Добавляем market_features если они есть
+    if market_features is not None:
+        features_to_concat.append(market_features)
+    
+    ml_features = pd.concat(features_to_concat, axis=1)
+    
+    # === 7. ДОБАВЛЯЕМ МЕТАДАННЫЕ ТИКЕРА ===
     ml_features['ticker_id'] = ticker
     
     # Sector ID из конфигурации
@@ -163,13 +180,13 @@ def build_all_features(
     for key, value in meta_features.items():
         ml_features[key] = value
     
-    # === 6. ОЧИСТКА ML FEATURES ===
+    # === 8. ОЧИСТКА ML FEATURES ===
     ml_features = handle_infinities(ml_features)
     
-    # === 7. ВАЛИДАЦИЯ ===
+    # === 9. ВАЛИДАЦИЯ ===
     validate_ml_output(ml_features, ticker)
     
-    # === 8. BACKTEST DATA (сырые цены) ===
+    # === 10. BACKTEST DATA (сырые цены) ===
     backtest_columns = ['date', 'open', 'high', 'low', 'close', 'volume']
     if 'date' not in df.columns and df.index.name == 'date':
         df = df.reset_index()
@@ -187,7 +204,8 @@ def process_single_ticker(
     data_dir: Path,
     output_ml_dir: Path,
     output_backtest_dir: Path,
-    input_suffix: str = "_ohlcv_returns.parquet"
+    input_suffix: str = "_ohlcv_returns.parquet",
+    index_df: Optional[pd.DataFrame] = None
 ) -> bool:
     """
     Обрабатывает один тикер: загружает, считает признаки, сохраняет.
@@ -198,6 +216,7 @@ def process_single_ticker(
         output_ml_dir: Директория для ML выхода
         output_backtest_dir: Директория для Backtest выхода
         input_suffix: Суффикс входных файлов
+        index_df: DataFrame с данными индекса IMOEX (для market features)
         
     Returns:
         True если успешно
@@ -208,7 +227,7 @@ def process_single_ticker(
         df = pd.read_parquet(input_path)
         
         # Расчет признаков
-        ml_features, backtest_data = build_all_features(df, ticker)
+        ml_features, backtest_data = build_all_features(df, ticker, index_df=index_df)
         
         # Сохранение ML features
         ml_path = output_ml_dir / f"{ticker}_ml_features.parquet"
@@ -256,13 +275,21 @@ def process_all_tickers(
     print(f"📋 Обработка {len(tickers)} тикеров...")
     print(f"   Тикеры: {tickers}\n")
     
+    # Загружаем индекс IMOEX для market features
+    index_df = None
+    try:
+        index_df = load_index_data(data_dir)
+        print(f"📈 Индекс IMOEX загружен: {len(index_df)} записей\n")
+    except FileNotFoundError:
+        print("⚠️ Индекс IMOEX не найден, market features будут пропущены\n")
+    
     processed = 0
     errors = []
     
     for ticker in tickers:
         print(f"🔄 {ticker}...")
         success = process_single_ticker(
-            ticker, data_dir, output_ml_dir, output_backtest_dir
+            ticker, data_dir, output_ml_dir, output_backtest_dir, index_df=index_df
         )
         if success:
             processed += 1
@@ -286,6 +313,8 @@ def get_ml_feature_columns() -> List[str]:
         VOLUME_FEATURE_COLUMNS +
         TREND_FEATURE_COLUMNS +
         CALENDAR_FEATURE_COLUMNS +
+        VOLATILITY_FEATURE_COLUMNS +
+        MARKET_FEATURE_COLUMNS +
         ['ticker_id', 'sector_id', 'sector_encoded', 'liquidity_rank', 'is_blue_chip', 'lot_size_log']
     )
 

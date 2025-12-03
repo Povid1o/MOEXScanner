@@ -20,6 +20,7 @@ from typing import List, Dict, Tuple, Optional
 import matplotlib.pyplot as plt
 import warnings
 import gc
+import json
 from datetime import datetime
 
 warnings.filterwarnings('ignore')
@@ -117,11 +118,24 @@ def load_all_ticker_data(data_dir: Path) -> pd.DataFrame:
     
     print(f"📁 Найдено файлов: {len(files)}")
     
+    # Загружаем метаданные тикеров для liquidity_rank
+    metadata_path = data_dir.parent.parent / "config" / "tickers_metadata.json"
+    ticker_metadata = {}
+    if metadata_path.exists():
+        with open(metadata_path, 'r', encoding='utf-8') as f:
+            ticker_metadata = json.load(f)
+        print(f"📋 Загружены метаданные из {metadata_path.name}")
+    
     # Загружаем все файлы
     dfs = []
     for f in files:
         ticker = f.stem.replace('_ml_features', '')
         df = pd.read_parquet(f)
+        
+        # Добавляем liquidity_rank из метаданных, если его нет в данных
+        if 'liquidity_rank' not in df.columns and ticker in ticker_metadata:
+            df['liquidity_rank'] = ticker_metadata[ticker].get('liquidity_rank', 30)
+        
         print(f"   • {ticker}: {len(df)} строк, {len(df.columns)} столбцов")
         dfs.append(df)
     
@@ -268,12 +282,15 @@ def create_sample_weights(df: pd.DataFrame) -> np.ndarray:
     Returns:
         np.ndarray с весами
     """
-    if 'liquidity_rank' not in df.columns:
-        print("⚠️ liquidity_rank не найден, используем равные веса")
+    if 'liquidity_rank' not in df.columns or df['liquidity_rank'].isna().all():
+        print("⚠️ liquidity_rank не найден или пуст, используем равные веса")
         return np.ones(len(df))
     
+    # Заполняем NaN медианным значением
+    liquidity = df['liquidity_rank'].fillna(df['liquidity_rank'].median()).values
+    
     # Формула весов: более ликвидные (rank ближе к 1) получают больший вес
-    weights = 1.0 / np.log(df['liquidity_rank'].values + 2)  # +2 чтобы избежать log(1)=0
+    weights = 1.0 / np.log(liquidity + 2)  # +2 чтобы избежать log(1)=0
     
     # Нормализация для стабильности
     weights = weights / weights.mean()
@@ -345,9 +362,11 @@ def prepare_lgbm_data(
     # Sample weights для train
     sample_weights = create_sample_weights(train_df)
     
-    # Заполняем NaN в признаках (LightGBM умеет работать с NaN, но лучше обработать)
-    X_train = X_train.fillna(0)
-    X_test = X_test.fillna(0)
+    # Заполняем NaN только в числовых колонках (категориальные оставляем как есть)
+    # LightGBM умеет работать с NaN в категориальных признаках
+    numeric_cols = X_train.select_dtypes(include=[np.number]).columns
+    X_train[numeric_cols] = X_train[numeric_cols].fillna(0)
+    X_test[numeric_cols] = X_test[numeric_cols].fillna(0)
     
     return {
         'X_train': X_train,
