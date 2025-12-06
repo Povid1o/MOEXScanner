@@ -26,7 +26,7 @@ except ImportError as e:
     print("      pip install -r requirements.txt")
     sys.exit(1)
 
-ML_ROOT = Path(__file__).parent
+ML_ROOT = Path(__file__).parent.parent
 REPORTS_DIR = ML_ROOT / "reports"
 
 

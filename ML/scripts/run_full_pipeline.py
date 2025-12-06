@@ -2,12 +2,14 @@
 🚀 Полный Production Pipeline для MOEX Volatility Scanner
 
 Запуск:
-    python run_full_pipeline.py [--skip-features] [--skip-training] [--ticker SBER]
+    python scripts/run_full_pipeline.py [--preset PRESET] [--skip-features] [--skip-training] [--ticker SBER]
 
 Этапы:
     1. Feature Engineering (D1 + H1 признаки)
-    2. Model Training (LightGBM Quantile)
+    2. Model Training (LightGBM Quantile) - использует config/training_config.py
     3. Inference + Результаты
+
+Параметры обучения настраиваются в: config/training_config.py
 
 Автор: ML Pipeline v2.0
 """
@@ -15,13 +17,15 @@
 import argparse
 import sys
 import time
+import re
 from pathlib import Path
 from datetime import datetime
 
 # Добавляем пути для импорта
-ML_ROOT = Path(__file__).parent
+ML_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ML_ROOT))
 sys.path.insert(0, str(ML_ROOT / "03_models"))
+sys.path.insert(0, str(ML_ROOT / "config"))
 
 
 def print_header(title: str):
@@ -259,6 +263,45 @@ def run_inference(ticker: str = "SBER", use_ensemble: bool = True):
     return True
 
 
+def set_training_preset(preset_name: str):
+    """
+    Устанавливает активный пресет в config/training_config.py.
+    
+    Args:
+        preset_name: Имя пресета (BASELINE, MORE_TRAIN, REGULARIZED, NO_TICKER)
+    """
+    config_file = ML_ROOT / "config" / "training_config.py"
+    
+    if not config_file.exists():
+        print(f"⚠️ Файл конфигурации не найден: {config_file}")
+        print("   Используется дефолтная конфигурация")
+        return False
+    
+    try:
+        with open(config_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Заменяем ACTIVE_PRESET
+        original_content = content
+        content = re.sub(
+            r"ACTIVE_PRESET = ['\"][^'\"]+['\"]",
+            f"ACTIVE_PRESET = '{preset_name}'",
+            content
+        )
+        
+        if content != original_content:
+            with open(config_file, 'w', encoding='utf-8') as f:
+                f.write(content)
+            print(f"✅ Установлен пресет: {preset_name}")
+            return True
+        else:
+            print(f"⚠️ Пресет {preset_name} уже установлен или не найден в конфиге")
+            return False
+    except Exception as e:
+        print(f"⚠️ Ошибка при установке пресета: {e}")
+        return False
+
+
 def main():
     """Главная функция."""
     
@@ -267,12 +310,27 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры:
-  python run_full_pipeline.py                    # Полный pipeline
-  python run_full_pipeline.py --skip-features   # Только обучение и инференс
-  python run_full_pipeline.py --skip-training   # Только features и инференс
-  python run_full_pipeline.py --ticker GAZP     # Прогноз для GAZP
-  python run_full_pipeline.py --no-intraday     # Без H1 признаков
+  python scripts/run_full_pipeline.py                    # Полный pipeline
+  python scripts/run_full_pipeline.py --preset MORE_TRAIN # С пресетом конфигурации
+  python scripts/run_full_pipeline.py --skip-features   # Только обучение и инференс
+  python scripts/run_full_pipeline.py --skip-training   # Только features и инференс
+  python scripts/run_full_pipeline.py --ticker GAZP      # Прогноз для GAZP
+  python scripts/run_full_pipeline.py --no-intraday      # Без H1 признаков
+
+Пресеты конфигурации (в config/training_config.py):
+  - BASELINE: Текущая модель (60/40 split)
+  - MORE_TRAIN: Больше train данных (70/30 split)
+  - REGULARIZED: Сильная регуляризация
+  - NO_TICKER: Без ticker_id признака
         """
+    )
+    
+    parser.add_argument(
+        "--preset",
+        type=str,
+        default=None,
+        choices=["BASELINE", "MORE_TRAIN", "REGULARIZED", "NO_TICKER"],
+        help="Пресет конфигурации из config/training_config.py (default: текущий)"
     )
     
     parser.add_argument(
@@ -304,10 +362,16 @@ def main():
     
     args = parser.parse_args()
     
+    # Устанавливаем пресет если указан
+    if args.preset:
+        set_training_preset(args.preset)
+    
     # Заголовок
     print("\n" + "🚀" * 35)
     print("   MOEX VOLATILITY SCANNER - FULL PIPELINE")
     print("   " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    if args.preset:
+        print(f"   📌 Пресет: {args.preset}")
     print("🚀" * 35)
     
     total_start = time.time()
