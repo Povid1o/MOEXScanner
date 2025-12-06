@@ -60,8 +60,7 @@ def calculate_accuracy_metrics(df: pd.DataFrame) -> dict:
 def load_and_validate(ticker: str = None) -> pd.DataFrame:
     """Загружает данные и делает прогнозы для валидации."""
     
-    # Коррекция bias: модель систематически завышает прогнозы на +4.14%
-    model = GlobalQuantileModel(bias_correction=-0.0414)
+    model = GlobalQuantileModel()
     model.load_models()
     
     # Загрузка данных
