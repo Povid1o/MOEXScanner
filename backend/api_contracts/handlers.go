@@ -56,6 +56,7 @@ type PredictionHandler struct{}
 func (h *PredictionHandler) Predict(c *gin.Context) {
 	log.Println("[call Predict]")
 	var req PredictionRequest
+
 	// validation user request
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -65,7 +66,7 @@ func (h *PredictionHandler) Predict(c *gin.Context) {
 		return
 	}
 
-	//validate data user request
+	// validate data user request
 	endDate, _ := time.Parse("2006-01-02", req.Date)
 	startDate := endDate.AddDate(0, 0, -60)
 	candles, err := src.GetCandles(
@@ -75,7 +76,7 @@ func (h *PredictionHandler) Predict(c *gin.Context) {
 		24, //24 for day data
 	)
 	if err != nil {
-		checkError(err)
+		log.Printf("Error getting candles: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":   "Failed to get data from MOEX",
 			"details": err.Error(),
@@ -89,7 +90,7 @@ func (h *PredictionHandler) Predict(c *gin.Context) {
 		return
 	}
 
-	//preapre promt for ai
+	// prepare prompt for ai
 	candlesJSON, _ := json.Marshal(candles)
 
 	prompt := fmt.Sprintf(`
@@ -163,21 +164,42 @@ func (h *PredictionHandler) Predict(c *gin.Context) {
 		3. Убедись, что JSON синтаксически корректен
 		`, req.Ticker, string(candlesJSON), req.Timeframe, req.Horizon, req.Date, req.Ticker, req.Horizon)
 
-	//ai call
 	log.Println("[ai call]")
 	aiResponse, err := src.Ai_send_request("Financial Analyst", prompt)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("AI request error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Failed to get AI response",
+			"details": err.Error(),
+		})
 		return
 	}
 
-	//for test
-	c.JSON(http.StatusOK, gin.H{
-		"raw_ai_response": aiResponse,
-		"status":          "success",
-		"note":            "test",
-	})
+	log.Printf("[parsing AI response] Raw response: %s", aiResponse)
 
+	cleanedResponse := cleanAIResponse(aiResponse)
+
+	var aiResp AIResponse
+	if err := json.Unmarshal([]byte(cleanedResponse), &aiResp); err != nil {
+		log.Printf("Failed to parse AI response: %v", err)
+		log.Printf("Cleaned response: %s", cleanedResponse)
+
+		jsonStr := extractJSONFromText(aiResponse)
+		if jsonStr == "" {
+			log.Println("Using fallback data")
+			aiResp = getFallbackResponse(req.Ticker, req.Horizon, candles)
+		} else {
+			if err := json.Unmarshal([]byte(jsonStr), &aiResp); err != nil {
+				log.Printf("Failed to parse extracted JSON: %v", err)
+				aiResp = getFallbackResponse(req.Ticker, req.Horizon, candles)
+			}
+		}
+	}
+
+	aiResp.Ticker = req.Ticker
+	aiResp.Horizon = req.Horizon
+
+	c.JSON(http.StatusOK, aiResp)
 }
 
 type BacktestHandler struct{}
