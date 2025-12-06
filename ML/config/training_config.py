@@ -88,7 +88,8 @@ QUANTILES = [0.16, 0.50, 0.84]
 # 🏷️ КАТЕГОРИАЛЬНЫЕ ПРИЗНАКИ
 # ============================================================================
 
-CATEGORICAL_FEATURES = [
+# БАЗОВЫЙ СПИСОК (с ticker_id)
+CATEGORICAL_FEATURES_BASE = [
     'ticker_id',       # ID тикера (может вызывать переобучение!)
     'sector_id',       # ID сектора
     'is_month_end',
@@ -100,12 +101,21 @@ CATEGORICAL_FEATURES = [
     'price_position_ma'
 ]
 
-# Эксперимент: убрать ticker_id чтобы модель не "запоминала" тикеры
-# CATEGORICAL_FEATURES = [
-#     'sector_id',
-#     'is_month_end',
-#     ...
-# ]
+# ЭКСПЕРИМЕНТ: без ticker_id (для лучшей генерализации)
+CATEGORICAL_FEATURES_NO_TICKER = [
+    'sector_id',       # ID сектора (остаётся - это обобщённая информация)
+    'is_month_end',
+    'is_month_start',
+    'day_of_week',
+    'vp_above_va',
+    'volume_spike',
+    'trend_signal',
+    'price_position_ma'
+]
+
+# АКТИВНЫЙ СПИСОК (выберите один из вариантов выше)
+CATEGORICAL_FEATURES = CATEGORICAL_FEATURES_NO_TICKER  # Эксперимент без ticker_id
+# CATEGORICAL_FEATURES = CATEGORICAL_FEATURES_BASE  # С ticker_id (базовый вариант)
 
 
 # ============================================================================
@@ -113,10 +123,10 @@ CATEGORICAL_FEATURES = [
 # ============================================================================
 
 EXCLUDE_TICKERS = [
-    # 'FIVE',   # r=0.077 - очень плохо
-    # 'BELU',   # r=0.241 - плохо
-    # 'YNDX',   # r=0.343 - слабо
-    # 'LENT',   # r=0.427 - слабо
+    'FIVE',   # r=0.077 - очень плохо
+    'BELU',   # r=0.241 - плохо
+    'YNDX',   # r=0.343 - слабо
+    'LENT',   # r=0.427 - слабо
 ]
 
 

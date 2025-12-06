@@ -93,7 +93,11 @@ class SignalGenerator:
         """Загружает обученные квантильные модели."""
         from inference import GlobalQuantileModel
         
-        self.model = GlobalQuantileModel(self.config.MODELS_DIR)
+        # Коррекция bias: модель систематически завышает прогнозы на +4.14%
+        self.model = GlobalQuantileModel(
+            self.config.MODELS_DIR,
+            bias_correction=-0.0414
+        )
         self.model.load_models()
     
     def generate_signals_for_ticker(

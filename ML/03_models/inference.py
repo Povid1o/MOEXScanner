@@ -60,8 +60,10 @@ class GlobalQuantileModel:
     """
     
     # Категориальные признаки (должны совпадать с train_global_model.py)
+    # ВАЖНО: Если модель обучена БЕЗ ticker_id, уберите его отсюда!
+    # Проверьте config/training_config.py для актуального списка
     CATEGORICAL_FEATURES = [
-        'ticker_id', 
+        # 'ticker_id',  # Закомментировано для эксперимента без ticker_id
         'sector_id',
         'is_month_end',
         'is_month_start',
@@ -76,7 +78,8 @@ class GlobalQuantileModel:
         self, 
         model_dir: Optional[Path] = None,
         use_ensemble: bool = False,
-        ensemble_weights: Optional[Dict[str, float]] = None
+        ensemble_weights: Optional[Dict[str, float]] = None,
+        bias_correction: Optional[float] = None
     ):
         """
         Инициализация.
@@ -85,6 +88,10 @@ class GlobalQuantileModel:
             model_dir: Директория с сохранёнными моделями
             use_ensemble: Использовать ли ансамбль с GARCH
             ensemble_weights: Веса ансамбля {'lgbm': 0.7, 'garch': 0.3}
+            bias_correction: Коррекция смещения (bias) для медианы (q50).
+                           Если None, коррекция не применяется.
+                           Пример: bias_correction=-0.0414 для исправления +4.14% bias.
+                           ⚠️ ВНИМАНИЕ: Это временное решение! Лучше переобучить модель.
         """
         if model_dir is None:
             self.model_dir = Path(__file__).parent.parent / "data" / "models"
@@ -95,6 +102,12 @@ class GlobalQuantileModel:
         self.feature_names: List[str] = []
         self.quantiles = [0.16, 0.50, 0.84]
         self._loaded = False
+        
+        # Коррекция bias (применяется только к медиане q50)
+        self.bias_correction = bias_correction
+        if self.bias_correction is not None:
+            print(f"🔧 Включена коррекция bias: {self.bias_correction:.4f} (только для медианы q50)")
+            print(f"   ⚠️ Это временное решение! Рекомендуется переобучить модель.")
         
         # Ансамбль
         self.use_ensemble = use_ensemble and ENSEMBLE_AVAILABLE
@@ -177,6 +190,13 @@ class GlobalQuantileModel:
         for alpha in self.quantiles:
             col_name = f"pred_q{int(alpha*100)}"
             predictions[col_name] = self.models[alpha].predict(X_prepared)
+        
+        # Применяем коррекцию bias только к медиане (q50)
+        # КРИТИЧНО: Не трогаем q16 и q84, чтобы сохранить калибровку квантилей!
+        if self.bias_correction is not None:
+            predictions['pred_q50'] = predictions['pred_q50'] + self.bias_correction
+            # Защита от отрицательных значений (волатильность не может быть < 0)
+            predictions['pred_q50'] = np.maximum(predictions['pred_q50'], 0.001)
         
         # Ширина интервала (мера неопределённости)
         if return_interval:

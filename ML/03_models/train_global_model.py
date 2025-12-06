@@ -402,7 +402,15 @@ def prepare_lgbm_data(
     print(f"📊 После удаления NaN: train={len(train_df):,}, test={len(test_df):,}")
     
     # Определяем признаки (исключаем служебные столбцы)
+    # Базовые исключения
     exclude_cols = ['date', target_col]
+    
+    # Если ticker_id не в категориальных признаках, исключаем его из фичей
+    # (чтобы модель не использовала его для прогноза)
+    if 'ticker_id' not in categorical_features:
+        exclude_cols.append('ticker_id')
+        print(f"   ⚠️ ticker_id исключён из фичей (эксперимент без запоминания тикеров)")
+    
     feature_cols = [col for col in train_df.columns if col not in exclude_cols]
     
     # Фильтруем категориальные признаки (только те, что есть в данных)

@@ -167,9 +167,11 @@ def run_inference(ticker: str = "SBER", use_ensemble: bool = True):
     # Загрузка модели
     print(f"📦 Режим: {'Ансамбль (LightGBM + GARCH)' if use_ensemble and ENSEMBLE_AVAILABLE else 'LightGBM'}")
     
+    # Коррекция bias: модель систематически завышает прогнозы на +4.14%
     model = GlobalQuantileModel(
         use_ensemble=use_ensemble and ENSEMBLE_AVAILABLE,
-        ensemble_weights={'lgbm': 0.7, 'garch': 0.3}
+        ensemble_weights={'lgbm': 0.7, 'garch': 0.3},
+        bias_correction=-0.0414
     )
     
     try:
