@@ -3,4 +3,4 @@
 .go.sum
 .main_with_gin.txt
 ML/venv/
-backend/config.go
+backend/src/config.go
