@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Trading Assistant</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 1200px;
+            height: 90vh;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+
+        .chat-container {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+
+        .chat-history {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .message {
+            max-width: 80%;
+            padding: 15px;
+            border-radius: 15px;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .user-message {
+            align-self: flex-end;
+            background: #667eea;
+            color: white;
+            border-bottom-right-radius: 5px;
+        }
+
+        .ai-message {
+            align-self: flex-start;
+            background: #f0f2ff;
+            border: 1px solid #e0e7ff;
+            border-bottom-left-radius: 5px;
+        }
+
+        .message-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            font-size: 12px;
+            opacity: 0.8;
+        }
+
+        .message-content {
+            line-height: 1.5;
+        }
+
+        .trading-view {
+            width: 400px;
+            border-left: 1px solid #e0e7ff;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .chart-container {
+            height: 300px;
+            background: white;
+            border-radius: 10px;
+            padding: 15px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+        }
+
+        .trading-info {
+            background: white;
+            border-radius: 10px;
+            padding: 15px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+        }
+
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .info-item {
+            font-size: 13px;
+        }
+
+        .info-label {
+            font-weight: 600;
+            color: #667eea;
+        }
+
+        .signal-buy {
+            color: #10b981;
+            font-weight: bold;
+        }
+
+        .signal-sell {
+            color: #ef4444;
+            font-weight: bold;
+        }
+
+        .input-container {
+            padding: 20px;
+            border-top: 1px solid #e0e7ff;
+            background: white;
+        }
+
+        .input-form {
+            display: flex;
+            gap: 10px;
+        }
+
+        .input-form input {
+            flex: 1;
+            padding: 15px 20px;
+            border: 2px solid #e0e7ff;
+            border-radius: 50px;
+            font-size: 16px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        .input-form input:focus {
+            border-color: #667eea;
+        }
+
+        .input-form button {
+            padding: 15px 30px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 50px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.3s;
+        }
+
+        .input-form button:hover {
+            transform: translateY(-2px);
+        }
+
+        .input-form button:active {
+            transform: translateY(0);
+        }
+
+        .confidence-bar {
+            height: 8px;
+            background: #e0e7ff;
+            border-radius: 4px;
+            margin-top: 5px;
+            overflow: hidden;
+        }
+
+        .confidence-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #10b981, #3b82f6);
+            border-radius: 4px;
+            transition: width 1s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .loading-spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid #e0e7ff;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .features-list {
+            margin-top: 15px;
+            font-size: 13px;
+        }
+
+        .feature-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 5px 0;
+            border-bottom: 1px solid #e0e7ff;
+        }
+
+        .feature-name {
+            color: #667eea;
+        }
+
+        .feature-value {
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 AI Trading Assistant</h1>
+            <p>Анализ рынка с помощью нейронной сети</p>
+        </div>
+
+        <div class="chat-container">
+            <div class="chat-history" id="chatHistory">
+                <div class="message ai-message">
+                    <div class="message-header">
+                        <span>🤖 AI Assistant</span>
+                        <span>Сейчас</span>
+                    </div>
+                    <div class="message-content">
+                        Привет! Я AI Trading Assistant. Задайте мне вопрос о любом тикере, например: "SBER на 3 дня" или "GAZP прогноз на неделю"
+                    </div>
+                </div>
+            </div>
+
+            <div class="trading-view">
+                <div class="chart-container">
+                    <canvas id="priceChart"></canvas>
+                </div>
+                <div class="trading-info" id="tradingInfo">
+                    <h3>📊 Trading Signal</h3>
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <span class="info-label">Action:</span>
+                            <span id="signalAction" class="signal-buy">-</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Entry:</span>
+                            <span id="signalEntry">-</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Target:</span>
+                            <span id="signalTarget">-</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Stop Loss:</span>
+                            <span id="signalStopLoss">-</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Confidence:</span>
+                            <span id="signalConfidence">-</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Trend:</span>
+                            <span id="signalTrend">-</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="loading" id="loading">
+            <div class="loading-spinner"></div>
+            <p>Анализирую данные...</p>
+        </div>
+
+        <div class="input-container">
+            <form class="input-form" id="chatForm">
+                <input type="text" id="messageInput" 
+                       placeholder="Введите запрос (например: SBER прогноз на 3 дня)" 
+                       autocomplete="off">
+                <button type="submit">Отправить</button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        let priceChart = null;
+        
+        document.getElementById('chatForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            
+            if (!message) return;
+            
+            // Добавляем сообщение пользователя
+            addMessage(message, 'user');
+            input.value = '';
+            
+            // Показываем загрузку
+            document.getElementById('loading').style.display = 'block';
+            
+            try {
+                // Отправляем запрос на наш сервер
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ message: message })
+                });
+                
+                const data = await response.json();
+                
+                // Добавляем ответ от AI
+                addAIMessage(data);
+                
+                // Обновляем график и информацию
+                updateTradingView(data);
+                
+            } catch (error) {
+                console.error('Error:', error);
+                addMessage('Ошибка при соединении с сервером', 'ai');
+            } finally {
+                // Скрываем загрузку
+                document.getElementById('loading').style.display = 'none';
+            }
+        });
+        
+        function addMessage(text, sender) {
+            const chatHistory = document.getElementById('chatHistory');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${sender}-message`;
+            
+            const now = new Date();
+            const timeString = now.toLocaleTimeString('ru-RU', { 
+                hour: '2-digit', 
+                minute: '2-digit' 
+            });
+            
+            messageDiv.innerHTML = `
+                <div class="message-header">
+                    <span>${sender === 'user' ? '👤 Вы' : '🤖 AI Assistant'}</span>
+                    <span>${timeString}</span>
+                </div>
+                <div class="message-content">${text}</div>
+            `;
+            
+            chatHistory.appendChild(messageDiv);
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+        }
+        
+        function addAIMessage(data) {
+            const chatHistory = document.getElementById('chatHistory');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message ai-message';
+            
+            const now = new Date();
+            const timeString = now.toLocaleTimeString('ru-RU', { 
+                hour: '2-digit', 
+                minute: '2-digit' 
+            });
+            
+            let confidencePercent = Math.round(data.confidence * 100);
+            
+            messageDiv.innerHTML = `
+                <div class="message-header">
+                    <span>🤖 AI Assistant</span>
+                    <span>${timeString}</span>
+                </div>
+                <div class="message-content">
+                    <strong>📈 ${data.ticker} | Horizon: ${data.horizon} days</strong><br><br>
+                    ${data.explanation.text}<br><br>
+                    
+                    <strong>Волатильность:</strong><br>
+                    Median: ${(data.predicted_volatility.median * 100).toFixed(2)}%<br>
+                    
+                    <strong>Уверенность прогноза:</strong><br>
+                    ${confidencePercent}%
+                    <div class="confidence-bar">
+                        <div class="confidence-fill" style="width: ${confidencePercent}%"></div>
+                    </div><br>
+                    
+                    <strong>Тренд:</strong> ${data.trend.direction} (${data.trend.confidence})<br>
+                    <strong>Сигнал:</strong> <span class="signal-${data.trading_signal.action.toLowerCase()}">${data.trading_signal.action}</span><br><br>
+                    
+                    <div class="features-list">
+                        <strong>Ключевые факторы:</strong>
+                        ${data.explanation.top_features.map(feature => `
+                            <div class="feature-item">
+                                <span class="feature-name">${feature.name}:</span>
+                                <span class="feature-value">${feature.value.toFixed(3)}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+            
+            chatHistory.appendChild(messageDiv);
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+        }
+        
+        function updateTradingView(data) {
+            // Обновляем торговую информацию
+            document.getElementById('signalAction').textContent = data.trading_signal.action;
+            document.getElementById('signalAction').className = `signal-${data.trading_signal.action.toLowerCase()}`;
+            document.getElementById('signalEntry').textContent = data.trading_signal.entry.toFixed(2);
+            document.getElementById('signalTarget').textContent = data.trading_signal.target.toFixed(2);
+            document.getElementById('signalStopLoss').textContent = data.trading_signal.stop_loss.toFixed(2);
+            document.getElementById('signalConfidence').textContent = (data.confidence * 100).toFixed(1) + '%';
+            document.getElementById('signalTrend').textContent = data.trend.direction;
+            
+            // Обновляем график
+            updatePriceChart(data);
+        }
+        
+        function updatePriceChart(data) {
+            const ctx = document.getElementById('priceChart').getContext('2d');
+            
+            // Уничтожаем старый график если есть
+            if (priceChart) {
+                priceChart.destroy();
+            }
+            
+            // Создаем данные для графика
+            const labels = ['-2σ', '-1σ', 'Current', '+1σ', '+2σ'];
+            const values = [
+                data.channel.lower_2sigma,
+                data.channel.lower_1sigma,
+                data.channel.current_price,
+                data.channel.upper_1sigma,
+                data.channel.upper_2sigma
+            ];
+            
+            priceChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Price Levels',
+                        data: values,
+                        backgroundColor: [
+                            '#ef4444',
+                            '#f97316',
+                            '#3b82f6',
+                            '#10b981',
+                            '#8b5cf6'
+                        ],
+                        borderColor: [
+                            '#dc2626',
+                            '#ea580c',
+                            '#2563eb',
+                            '#059669',
+                            '#7c3aed'
+                        ],
+                        borderWidth: 2,
+                        borderRadius: 5
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'top',
+                        },
+                        title: {
+                            display: true,
+                            text: `${data.ticker} Price Channel`,
+                            font: {
+                                size: 16
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return `${context.label}: ${context.raw.toFixed(2)}`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: false,
+                            title: {
+                                display: true,
+                                text: 'Price (RUB)'
+                            },
+                            grid: {
+                                color: 'rgba(0, 0, 0, 0.1)'
+                            }
+                        },
+                        x: {
+                            grid: {
+                                display: false
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Инициализация пустого графика при загрузке
+        window.onload = function() {
+            const ctx = document.getElementById('priceChart').getContext('2d');
+            priceChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['-2σ', '-1σ', 'Current', '+1σ', '+2σ'],
+                    datasets: [{
+                        label: 'Waiting for data...',
+                        data: [0, 0, 0, 0, 0],
+                        backgroundColor: 'rgba(200, 200, 200, 0.5)',
+                        borderColor: 'rgba(200, 200, 200, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false
+                }
+            });
+        };
+        
+        // Enter для отправки
+        document.getElementById('messageInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                document.getElementById('chatForm').dispatchEvent(new Event('submit'));
+            }
+        });
+    </script>
+</body>
+</html>
