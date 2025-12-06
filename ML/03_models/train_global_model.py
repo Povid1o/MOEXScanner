@@ -30,8 +30,60 @@ warnings.filterwarnings('ignore')
 # КОНФИГУРАЦИЯ
 # ============================================================================
 
+# Попытка загрузить внешнюю конфигурацию
+try:
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent / "config"))
+    from training_config import (
+        TRAIN_CUTOFF_DATE as EXT_CUTOFF,
+        TARGET_HORIZON as EXT_HORIZON,
+        TARGET_COL as EXT_TARGET,
+        QUANTILES as EXT_QUANTILES,
+        LGBM_PARAMS as EXT_LGBM_PARAMS_BASE,
+        NUM_BOOST_ROUND as EXT_NUM_ROUNDS,
+        EARLY_STOPPING_ROUNDS as EXT_EARLY_STOP,
+        CATEGORICAL_FEATURES as EXT_CAT_FEATURES,
+        EXCLUDE_TICKERS as EXT_EXCLUDE_TICKERS,
+        get_active_config,
+        ACTIVE_PRESET,
+    )
+    USE_EXTERNAL_CONFIG = True
+    
+    # Применяем параметры из активного пресета
+    preset_config = get_active_config()
+    EXT_LGBM_PARAMS = EXT_LGBM_PARAMS_BASE.copy()
+    
+    # Обновляем параметры из пресета
+    if 'num_leaves' in preset_config:
+        EXT_LGBM_PARAMS['num_leaves'] = preset_config['num_leaves']
+    if 'learning_rate' in preset_config:
+        EXT_LGBM_PARAMS['learning_rate'] = preset_config['learning_rate']
+    if 'lambda_l1' in preset_config:
+        EXT_LGBM_PARAMS['lambda_l1'] = preset_config['lambda_l1']
+    if 'lambda_l2' in preset_config:
+        EXT_LGBM_PARAMS['lambda_l2'] = preset_config['lambda_l2']
+    if 'min_child_samples' in preset_config:
+        EXT_LGBM_PARAMS['min_child_samples'] = preset_config['min_child_samples']
+    
+    # Обновляем cutoff из пресета
+    if 'train_cutoff' in preset_config:
+        EXT_CUTOFF = preset_config['train_cutoff']
+    
+    print(f"✅ Загружена внешняя конфигурация из config/training_config.py")
+    print(f"📌 Активный пресет: {ACTIVE_PRESET}")
+    print(f"📅 Train cutoff: {EXT_CUTOFF}")
+except ImportError as e:
+    USE_EXTERNAL_CONFIG = False
+    EXT_LGBM_PARAMS = None
+    print(f"⚠️ Используется встроенная конфигурация (ошибка импорта: {e})")
+
+
 class Config:
-    """Конфигурация обучения модели."""
+    """
+    Конфигурация обучения модели.
+    
+    💡 Для экспериментов редактируйте: config/training_config.py
+    """
     
     # Пути
     ML_ROOT = Path(__file__).parent.parent
@@ -39,18 +91,20 @@ class Config:
     OUTPUT_MODEL_DIR = ML_ROOT / "data" / "models"
     REPORTS_DIR = ML_ROOT / "reports"
     
+    # === ПАРАМЕТРЫ ИЗ ВНЕШНЕЙ КОНФИГУРАЦИИ (или дефолтные) ===
+    
     # Временной split
-    TRAIN_CUTOFF_DATE = '2024-01-01'
+    TRAIN_CUTOFF_DATE = EXT_CUTOFF if USE_EXTERNAL_CONFIG else '2024-01-01'
     
     # Квантили для прогноза (границы 1-sigma и медиана)
-    QUANTILES = [0.16, 0.50, 0.84]
+    QUANTILES = EXT_QUANTILES if USE_EXTERNAL_CONFIG else [0.16, 0.50, 0.84]
     
     # Целевая переменная (будущая реализованная волатильность)
-    TARGET_HORIZON = 5  # дней вперёд
-    TARGET_COL = 'target_vol_5d'
+    TARGET_HORIZON = EXT_HORIZON if USE_EXTERNAL_CONFIG else 5
+    TARGET_COL = EXT_TARGET if USE_EXTERNAL_CONFIG else 'target_vol_5d'
     
     # Категориальные признаки
-    CATEGORICAL_FEATURES = [
+    CATEGORICAL_FEATURES = EXT_CAT_FEATURES if USE_EXTERNAL_CONFIG else [
         'ticker_id', 
         'sector_id',
         'is_month_end',
@@ -62,21 +116,24 @@ class Config:
         'price_position_ma'
     ]
     
+    # Исключаемые тикеры
+    EXCLUDE_TICKERS = EXT_EXCLUDE_TICKERS if USE_EXTERNAL_CONFIG else []
+    
     # Столбцы для исключения из признаков
     EXCLUDE_COLS = ['date', TARGET_COL, 'ticker_id', 'sector_id']
     
     # Гиперпараметры LightGBM
-    LGBM_PARAMS = {
+    LGBM_PARAMS = EXT_LGBM_PARAMS if USE_EXTERNAL_CONFIG else {
         'boosting_type': 'gbdt',
         'objective': 'quantile',
         'metric': 'quantile',
         'num_leaves': 63,
         'learning_rate': 0.05,
         'feature_fraction': 0.8,
-        'bagging_fraction': 0.8,  # Рандомная подвыборка строк
+        'bagging_fraction': 0.8,
         'bagging_freq': 5,
-        'lambda_l1': 0.1,  # L1 регуляризация
-        'lambda_l2': 0.1,  # L2 регуляризация
+        'lambda_l1': 0.1,
+        'lambda_l2': 0.1,
         'min_child_samples': 20,
         'verbose': -1,
         'n_jobs': -1,
@@ -84,8 +141,8 @@ class Config:
     }
     
     # Параметры обучения
-    NUM_BOOST_ROUND = 1000
-    EARLY_STOPPING_ROUNDS = 50
+    NUM_BOOST_ROUND = EXT_NUM_ROUNDS if USE_EXTERNAL_CONFIG else 1000
+    EARLY_STOPPING_ROUNDS = EXT_EARLY_STOP if USE_EXTERNAL_CONFIG else 50
 
 
 # ============================================================================
@@ -126,10 +183,19 @@ def load_all_ticker_data(data_dir: Path) -> pd.DataFrame:
             ticker_metadata = json.load(f)
         print(f"📋 Загружены метаданные из {metadata_path.name}")
     
-    # Загружаем все файлы
+    # Загружаем все файлы (с фильтрацией исключённых тикеров)
     dfs = []
+    excluded_count = 0
+    
     for f in files:
         ticker = f.stem.replace('_ml_features', '')
+        
+        # Пропускаем исключённые тикеры
+        if ticker in Config.EXCLUDE_TICKERS:
+            print(f"   ⏭️ {ticker}: ИСКЛЮЧЁН из обучения")
+            excluded_count += 1
+            continue
+        
         df = pd.read_parquet(f)
         
         # Добавляем liquidity_rank из метаданных, если его нет в данных
@@ -138,6 +204,9 @@ def load_all_ticker_data(data_dir: Path) -> pd.DataFrame:
         
         print(f"   • {ticker}: {len(df)} строк, {len(df.columns)} столбцов")
         dfs.append(df)
+    
+    if excluded_count:
+        print(f"\n⚠️ Исключено тикеров: {excluded_count}")
     
     # Объединяем в один DataFrame
     global_df = pd.concat(dfs, ignore_index=True)
