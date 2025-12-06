@@ -123,9 +123,74 @@ def volatility_ratio(short_vol: pd.Series, long_vol: pd.Series) -> pd.Series:
     return ratio.replace([np.inf, -np.inf], np.nan)
 
 
+def directional_volatility(
+    returns: pd.Series,
+    window: int = 20
+) -> tuple:
+    """
+    Направленная волатильность: раздельная для роста и падения.
+    
+    Разделяет волатильность на:
+    - up_vol: волатильность положительных returns (upside risk)
+    - down_vol: волатильность отрицательных returns (downside risk)
+    
+    Полезно для:
+    - Определения асимметрии рисков
+    - Идентификации режимов рынка (risk-on / risk-off)
+    - Корректировки стратегий под downside risk
+    
+    Args:
+        returns: Серия log returns
+        window: Окно для rolling std
+        
+    Returns:
+        Tuple[pd.Series, pd.Series]: (up_vol, down_vol) - аннуализированные
+    """
+    # Разделяем returns
+    up_returns = returns.where(returns > 0, 0)
+    down_returns = returns.where(returns < 0, 0)
+    
+    # Волатильность для каждого направления
+    up_vol = up_returns.rolling(window=window).std() * np.sqrt(252)
+    down_vol = down_returns.abs().rolling(window=window).std() * np.sqrt(252)
+    
+    return up_vol, down_vol
+
+
+def volatility_asymmetry(up_vol: pd.Series, down_vol: pd.Series) -> pd.Series:
+    """
+    Асимметрия волатильности: отношение down_vol к up_vol.
+    
+    Формула: down_vol / up_vol
+    
+    Интерпретация:
+    - > 1: больше downside risk (типично для акций)
+    - = 1: симметричная волатильность
+    - < 1: больше upside risk (редко)
+    
+    Args:
+        up_vol: Upside volatility
+        down_vol: Downside volatility
+        
+    Returns:
+        pd.Series: Коэффициент асимметрии
+    """
+    asymmetry = down_vol / up_vol.replace(0, np.nan)
+    return asymmetry.replace([np.inf, -np.inf], np.nan)
+
+
 def build_volatility_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Строит все признаки волатильности из DataFrame с OHLCV и log_return.
+    
+    Включает:
+    - Realized Volatility (окна: 5, 10, 20, 30, 60)
+    - EWMA Volatility
+    - Parkinson Volatility (high-low)
+    - Garman-Klass Volatility (OHLC)
+    - Volatility Ratios (режим волатильности)
+    - Directional Volatility (up_vol, down_vol) - NEW!
+    - Volatility Asymmetry - NEW!
     
     Args:
         df: DataFrame с колонками: open, high, low, close, log_return
@@ -144,7 +209,8 @@ def build_volatility_features(df: pd.DataFrame) -> pd.DataFrame:
     returns = df['log_return']
     
     # === REALIZED VOLATILITY (разные окна) ===
-    for window in [5, 10, 20]:
+    # Добавлены окна 30 и 60 для долгосрочной волатильности
+    for window in [5, 10, 20, 30, 60]:
         features[f'rv_{window}d'] = realized_volatility(returns, window=window)
     
     # === EWMA VOLATILITY ===
@@ -174,9 +240,23 @@ def build_volatility_features(df: pd.DataFrame) -> pd.DataFrame:
         features['parkinson_vol_20d'], features['rv_20d']
     )
     
+    # Долгосрочный ratio (20 vs 60)
+    features['vol_ratio_20_60'] = volatility_ratio(
+        features['rv_20d'], features['rv_60d']
+    )
+    
+    # === DIRECTIONAL VOLATILITY (upside/downside) ===
+    up_vol_20, down_vol_20 = directional_volatility(returns, window=20)
+    features['up_vol_20d'] = up_vol_20
+    features['down_vol_20d'] = down_vol_20
+    
+    # Асимметрия волатильности (down/up ratio)
+    features['vol_asymmetry_20d'] = volatility_asymmetry(up_vol_20, down_vol_20)
+    
     # === VOLATILITY MOMENTUM ===
     # Изменение волатильности за последние N дней
     features['vol_momentum_5d'] = features['rv_20d'].pct_change(5)
+    features['vol_momentum_10d'] = features['rv_20d'].pct_change(10)
     
     # Обработка бесконечных значений
     features = features.replace([np.inf, -np.inf], np.nan)
@@ -186,12 +266,20 @@ def build_volatility_features(df: pd.DataFrame) -> pd.DataFrame:
 
 # Список всех генерируемых колонок (для документации и валидации)
 VOLATILITY_FEATURE_COLUMNS: List[str] = [
-    'rv_5d', 'rv_10d', 'rv_20d',
+    # Realized Volatility (расширенные окна)
+    'rv_5d', 'rv_10d', 'rv_20d', 'rv_30d', 'rv_60d',
+    # EWMA Volatility
     'ewma_vol_10d', 'ewma_vol_20d',
+    # Parkinson Volatility
     'parkinson_vol_10d', 'parkinson_vol_20d',
+    # Garman-Klass Volatility
     'gk_vol_10d', 'gk_vol_20d',
-    'vol_ratio_5_20', 'vol_ratio_park_rv',
-    'vol_momentum_5d'
+    # Volatility Ratios
+    'vol_ratio_5_20', 'vol_ratio_park_rv', 'vol_ratio_20_60',
+    # Directional Volatility (NEW)
+    'up_vol_20d', 'down_vol_20d', 'vol_asymmetry_20d',
+    # Volatility Momentum
+    'vol_momentum_5d', 'vol_momentum_10d'
 ]
 
 
@@ -202,6 +290,8 @@ __all__ = [
     'parkinson_volatility',
     'garman_klass_volatility',
     'volatility_ratio',
+    'directional_volatility',
+    'volatility_asymmetry',
     'build_volatility_features',
     'VOLATILITY_FEATURE_COLUMNS'
 ]

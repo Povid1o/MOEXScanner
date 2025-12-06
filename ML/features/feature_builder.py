@@ -26,14 +26,18 @@ from features.trend_features import build_trend_features, TREND_FEATURE_COLUMNS
 from features.calendar_features import build_calendar_features, CALENDAR_FEATURE_COLUMNS
 from features.volatility_features import build_volatility_features, VOLATILITY_FEATURE_COLUMNS
 from features.market_features import build_market_features, load_index_data, MARKET_FEATURE_COLUMNS
+from features.intraday_features import build_intraday_features, INTRADAY_FEATURE_COLUMNS
+from features.Loaders.load_hourly import load_hourly_data
 
 # Импорт конфигурации
 try:
     from config import get_ticker_metadata, encode_metadata_features
 except ImportError:
     # Fallback если config не найден
-    def get_ticker_metadata(ticker): return None
-    def encode_metadata_features(ticker): return {}
+    def get_ticker_metadata(ticker: str) -> Optional[Dict]:
+        return None
+    def encode_metadata_features(ticker: str) -> Dict:
+        return {}
 
 
 # === ЗАПРЕЩЕННЫЕ СТОЛБЦЫ ДЛЯ ML ВЫХОДА ===
@@ -90,7 +94,9 @@ def build_all_features(
     df: pd.DataFrame,
     ticker: str,
     include_volatility: bool = True,
-    index_df: Optional[pd.DataFrame] = None
+    index_df: Optional[pd.DataFrame] = None,
+    hourly_data_dir: Optional[Path] = None,
+    include_intraday: bool = True
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Главная функция: строит ВСЕ признаки и разделяет на ML/Backtest выходы.
@@ -100,6 +106,8 @@ def build_all_features(
         ticker: Тикер акции
         include_volatility: Включать ли признаки волатильности из исходного df
         index_df: DataFrame с данными индекса IMOEX (опционально, для market features)
+        hourly_data_dir: Директория с часовыми данными MOEX_DATA (для intraday features)
+        include_intraday: Включать ли внутридневные признаки (требует часовых данных)
         
     Returns:
         Tuple[ml_features, backtest_data]:
@@ -142,7 +150,34 @@ def build_all_features(
         except Exception as e:
             print(f"    ⚠️ Рыночные признаки недоступны: {e}")
     
-    # === 6. СОБИРАЕМ ML FEATURES ===
+    # === 6. ВНУТРИДНЕВНЫЕ ПРИЗНАКИ (из часовых данных) ===
+    intraday_features = None
+    if include_intraday and ticker != 'IMOEX':
+        print(f"    • Внутридневные признаки (IVR, OPM, VDS, POCS)...")
+        try:
+            # Определяем директорию с часовыми данными
+            if hourly_data_dir is None:
+                hourly_data_dir = Path(__file__).parent.parent / "data" / "MOEX_DATA"
+            
+            # Загружаем часовые данные
+            hourly_df = load_hourly_data(ticker, data_dir=hourly_data_dir)
+            
+            # Строим внутридневные признаки
+            intraday_features = build_intraday_features(hourly_df)
+            
+            # Подготовка к мёрджу: убеждаемся что индекс - datetime
+            if intraday_features.index.dtype == 'object':
+                intraday_features.index = pd.to_datetime(intraday_features.index)
+            
+            print(f"    ✅ Внутридневные признаки: {len(intraday_features.columns)} колонок, {len(intraday_features)} дней")
+            
+        except FileNotFoundError as e:
+            print(f"    ⚠️ Часовые данные не найдены для {ticker}: {e}")
+            print(f"       Внутридневные признаки будут пропущены")
+        except Exception as e:
+            print(f"    ⚠️ Внутридневные признаки недоступны: {e}")
+    
+    # === 7. СОБИРАЕМ ML FEATURES ===
     ml_features = pd.DataFrame(index=df.index)
     
     # Дата (для join и идентификации)
@@ -168,7 +203,44 @@ def build_all_features(
     
     ml_features = pd.concat(features_to_concat, axis=1)
     
-    # === 7. ДОБАВЛЯЕМ МЕТАДАННЫЕ ТИКЕРА ===
+    # === 8. МЁРДЖ ВНУТРИДНЕВНЫХ ПРИЗНАКОВ ===
+    if intraday_features is not None and len(intraday_features) > 0:
+        print(f"    • Мёрдж внутридневных признаков...")
+        
+        # Подготавливаем ключ для join
+        if 'date' in ml_features.columns:
+            # Создаём временный индекс для мёрджа
+            ml_features_temp = ml_features.copy()
+            # Приводим к normalized datetime (без времени)
+            ml_features_temp['_merge_date'] = pd.to_datetime(ml_features['date']).dt.normalize()
+            
+            intraday_temp = intraday_features.copy()
+            # Используем Series с dt.floor для приведения к дате (убираем время)
+            intraday_dates = pd.Series(intraday_features.index)
+            intraday_temp['_merge_date'] = intraday_dates.dt.floor('D').values
+            intraday_temp = intraday_temp.reset_index(drop=True)
+            
+            # Мёрджим по дате
+            n_before = len(ml_features)
+            ml_features = ml_features_temp.merge(
+                intraday_temp, 
+                on='_merge_date', 
+                how='left'
+            )
+            
+            # Удаляем служебную колонку
+            ml_features = ml_features.drop(columns=['_merge_date'])
+            
+            # Статистика по мёрджу
+            n_matched = ml_features[INTRADAY_FEATURE_COLUMNS[0]].notna().sum()
+            n_missing = n_before - n_matched
+            
+            if n_missing > 0:
+                print(f"    ⚠️ {n_missing} дней без внутридневных данных (NaN заполнение)")
+            
+            print(f"    ✅ Внутридневные признаки добавлены: {n_matched}/{n_before} дней")
+    
+    # === 9. ДОБАВЛЯЕМ МЕТАДАННЫЕ ТИКЕРА ===
     ml_features['ticker_id'] = ticker
     
     # Sector ID из конфигурации
@@ -180,19 +252,23 @@ def build_all_features(
     for key, value in meta_features.items():
         ml_features[key] = value
     
-    # === 8. ОЧИСТКА ML FEATURES ===
+    # === 10. ОЧИСТКА ML FEATURES ===
     ml_features = handle_infinities(ml_features)
     
-    # === 9. ВАЛИДАЦИЯ ===
+    # Явное приведение к DataFrame после всех операций
+    if not isinstance(ml_features, pd.DataFrame):
+        ml_features = pd.DataFrame(ml_features)
+    
+    # === 11. ВАЛИДАЦИЯ ===
     validate_ml_output(ml_features, ticker)
     
-    # === 10. BACKTEST DATA (сырые цены) ===
+    # === 12. BACKTEST DATA (сырые цены) ===
     backtest_columns = ['date', 'open', 'high', 'low', 'close', 'volume']
     if 'date' not in df.columns and df.index.name == 'date':
         df = df.reset_index()
     
     backtest_cols_present = [col for col in backtest_columns if col in df.columns]
-    backtest_data = df[backtest_cols_present].copy()
+    backtest_data = pd.DataFrame(df[backtest_cols_present].copy())
     
     print(f"    ✅ Готово: {len(ml_features.columns)} ML признаков, {len(backtest_data.columns)} Backtest столбцов")
     
@@ -205,7 +281,9 @@ def process_single_ticker(
     output_ml_dir: Path,
     output_backtest_dir: Path,
     input_suffix: str = "_ohlcv_returns.parquet",
-    index_df: Optional[pd.DataFrame] = None
+    index_df: Optional[pd.DataFrame] = None,
+    hourly_data_dir: Optional[Path] = None,
+    include_intraday: bool = True
 ) -> bool:
     """
     Обрабатывает один тикер: загружает, считает признаки, сохраняет.
@@ -217,6 +295,8 @@ def process_single_ticker(
         output_backtest_dir: Директория для Backtest выхода
         input_suffix: Суффикс входных файлов
         index_df: DataFrame с данными индекса IMOEX (для market features)
+        hourly_data_dir: Директория с часовыми данными MOEX_DATA (для intraday features)
+        include_intraday: Включать ли внутридневные признаки
         
     Returns:
         True если успешно
@@ -227,7 +307,12 @@ def process_single_ticker(
         df = pd.read_parquet(input_path)
         
         # Расчет признаков
-        ml_features, backtest_data = build_all_features(df, ticker, index_df=index_df)
+        ml_features, backtest_data = build_all_features(
+            df, ticker, 
+            index_df=index_df,
+            hourly_data_dir=hourly_data_dir,
+            include_intraday=include_intraday
+        )
         
         # Сохранение ML features
         ml_path = output_ml_dir / f"{ticker}_ml_features.parquet"
@@ -249,7 +334,8 @@ def process_all_tickers(
     data_dir: Path,
     output_ml_dir: Path,
     output_backtest_dir: Path,
-    tickers: Optional[List[str]] = None
+    tickers: Optional[List[str]] = None,
+    include_intraday: bool = True
 ) -> Tuple[int, List[str]]:
     """
     Batch обработка всех тикеров.
@@ -259,6 +345,7 @@ def process_all_tickers(
         output_ml_dir: Директория для ML выхода
         output_backtest_dir: Директория для Backtest выхода
         tickers: Список тикеров (если None - обрабатываем все файлы)
+        include_intraday: Включать ли внутридневные признаки (из H1 данных)
         
     Returns:
         Tuple[успешно_обработано, список_ошибок]
@@ -273,7 +360,8 @@ def process_all_tickers(
         tickers = [f.stem.replace('_ohlcv_returns', '') for f in available_files]
     
     print(f"📋 Обработка {len(tickers)} тикеров...")
-    print(f"   Тикеры: {tickers}\n")
+    print(f"   Тикеры: {tickers}")
+    print(f"   Внутридневные признаки: {'✅ включены' if include_intraday else '❌ отключены'}\n")
     
     # Загружаем индекс IMOEX для market features
     index_df = None
@@ -283,13 +371,19 @@ def process_all_tickers(
     except FileNotFoundError:
         print("⚠️ Индекс IMOEX не найден, market features будут пропущены\n")
     
+    # Определяем директорию с часовыми данными
+    hourly_data_dir = data_dir.parent / "MOEX_DATA" if include_intraday else None
+    
     processed = 0
     errors = []
     
     for ticker in tickers:
         print(f"🔄 {ticker}...")
         success = process_single_ticker(
-            ticker, data_dir, output_ml_dir, output_backtest_dir, index_df=index_df
+            ticker, data_dir, output_ml_dir, output_backtest_dir, 
+            index_df=index_df,
+            hourly_data_dir=hourly_data_dir,
+            include_intraday=include_intraday
         )
         if success:
             processed += 1
@@ -307,6 +401,16 @@ def process_all_tickers(
 def get_ml_feature_columns() -> List[str]:
     """
     Возвращает список ВСЕХ ML признаков (для документации и валидации).
+    
+    Включает:
+    - Базовые: date, log_return
+    - Объемные признаки (VOLUME_FEATURE_COLUMNS)
+    - Трендовые признаки (TREND_FEATURE_COLUMNS)
+    - Календарные признаки (CALENDAR_FEATURE_COLUMNS)
+    - Признаки волатильности (VOLATILITY_FEATURE_COLUMNS)
+    - Рыночные признаки (MARKET_FEATURE_COLUMNS)
+    - Внутридневные признаки (INTRADAY_FEATURE_COLUMNS) - NEW!
+    - Метаданные тикера
     """
     return (
         ['date', 'log_return'] +
@@ -315,6 +419,7 @@ def get_ml_feature_columns() -> List[str]:
         CALENDAR_FEATURE_COLUMNS +
         VOLATILITY_FEATURE_COLUMNS +
         MARKET_FEATURE_COLUMNS +
+        INTRADAY_FEATURE_COLUMNS +
         ['ticker_id', 'sector_id', 'sector_encoded', 'liquidity_rank', 'is_blue_chip', 'lot_size_log']
     )
 
@@ -326,7 +431,14 @@ __all__ = [
     'process_all_tickers',
     'get_ml_feature_columns',
     'validate_ml_output',
-    'FORBIDDEN_ML_COLUMNS'
+    'FORBIDDEN_ML_COLUMNS',
+    # Re-export feature columns для удобства
+    'VOLUME_FEATURE_COLUMNS',
+    'TREND_FEATURE_COLUMNS',
+    'CALENDAR_FEATURE_COLUMNS',
+    'VOLATILITY_FEATURE_COLUMNS',
+    'MARKET_FEATURE_COLUMNS',
+    'INTRADAY_FEATURE_COLUMNS'
 ]
 
 
