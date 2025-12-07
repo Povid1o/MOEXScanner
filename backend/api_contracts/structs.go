@@ -32,6 +32,14 @@ type UpdateData struct {
 }
 
 // AI resonse for user
+type PredictionRequest_2 struct {
+	Ticker    string `json:"ticker" binding:"required"`
+	Timeframe string `json:"timeframe" binding:"required"`
+	Horizon   int    `json:"horizon" binding:"required"`
+	Date      string `json:"date" binding:"required"`
+}
+
+// Структуры для ответа (добавьте в тот же файл)
 type PredictedVolatility struct {
 	Median      float64 `json:"median"`
 	Lower1Sigma float64 `json:"lower_1sigma"`
@@ -87,7 +95,7 @@ type VolumeContext struct {
 	VaPosition    string  `json:"va_position"`
 }
 
-type AIResponse struct {
+type PredictionResponse struct {
 	Ticker              string              `json:"ticker"`
 	Horizon             int                 `json:"horizon"`
 	PredictedVolatility PredictedVolatility `json:"predicted_volatility"`

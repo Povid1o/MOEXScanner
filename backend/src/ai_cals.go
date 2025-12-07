@@ -40,7 +40,7 @@ func CheckError(err error) {
 func Ai_send_request(role string, text string) (string, error) { // if !role {role = "user"}
 	url := "https://openrouter.ai/api/v1/chat/completions"
 	payload := map[string]interface{}{
-		"model": "deepseek/deepseek-r1-0528-qwen3-8b:free",
+		"model": "tngtech/deepseek-r1t2-chimera:free",
 		"messages": []map[string]string{
 			{
 				"role":    "system",

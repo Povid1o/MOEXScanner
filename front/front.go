@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -85,8 +86,20 @@ type UserRequest struct {
 	Message string `json:"message"`
 }
 
+// Структура для запроса к ML серверу (как ожидает PredictionHandler)
+type MLRequest struct {
+	Ticker    string `json:"ticker"`
+	Timeframe string `json:"timeframe"`
+	Horizon   int    `json:"horizon"`
+	Date      string `json:"date"`
+}
+
 func main() {
 	router := gin.Default()
+
+	// Устанавливаем режим релиза, чтобы убрать предупреждение
+	gin.SetMode(gin.ReleaseMode)
+
 	router.LoadHTMLGlob("templates/*")
 
 	// Middleware для CORS
@@ -118,67 +131,159 @@ func main() {
 
 		fmt.Printf("Получен запрос: %s\n", req.Message)
 
-		// Здесь можно добавить логику для парсинга сообщения пользователя
-		// и формирования запроса к ML серверу
+		// Парсим сообщение пользователя
+		ticker, horizon := parseUserMessage(req.Message)
+
+		// Формируем запрос к ML серверу в правильном формате
+		mlReq := MLRequest{
+			Ticker:    ticker,
+			Timeframe: "D", // по умолчанию дневной таймфрейм
+			Horizon:   horizon,
+			Date:      time.Now().Format("2006-01-02"),
+		}
 
 		// Проксируем запрос к ML серверу (127.0.0.1:8080)
-		mlResponse, err := forwardToMLServer(req.Message)
+		mlResponse, err := forwardToMLServer(mlReq)
 		if err != nil {
 			// Если ML сервер не доступен, возвращаем тестовые данные
 			fmt.Printf("Ошибка подключения к ML серверу: %v\n", err)
-			mlResponse = getMockResponse()
+			mlResponse = getMockResponse(ticker, horizon)
 		}
 
 		c.JSON(http.StatusOK, mlResponse)
 	})
 
-	// Статика для Chart.js
-	router.Static("/static", "./static")
-
-	fmt.Println("Сервер запущен на http://localhost:8081")
+	fmt.Println("Фронтенд сервер запущен на http://localhost:8081")
 	router.Run(":8081")
 }
 
-// Функция для отправки запроса к ML серверу
-func forwardToMLServer(message string) (*MLResponse, error) {
-	// Здесь должна быть логика парсинга сообщения и формирования запроса
-	// Пока что отправляем простой запрос
-	requestBody := map[string]interface{}{
-		"message":   message,
-		"timestamp": time.Now().Unix(),
+// Парсим сообщение пользователя для извлечения тикера и горизонта
+func parseUserMessage(message string) (string, int) {
+	message = strings.ToUpper(message)
+
+	// Список тикеров
+	tickers := []string{"SBER", "GAZP", "LKOH", "ROSN", "VTBR", "ALRS", "GMKN", "NVTK", "TATN", "YNDX"}
+
+	// Ищем тикер в сообщении
+	ticker := "SBER" // по умолчанию
+	for _, t := range tickers {
+		if strings.Contains(message, t) {
+			ticker = t
+			break
+		}
 	}
 
-	jsonData, err := json.Marshal(requestBody)
+	// Определяем горизонт
+	horizon := 3 // по умолчанию 3 дня
+	if strings.Contains(message, "НЕДЕЛ") || strings.Contains(message, "WEEK") {
+		horizon = 7
+	} else if strings.Contains(message, "МЕСЯЦ") || strings.Contains(message, "MONTH") {
+		horizon = 30
+	} else {
+		// Пытаемся найти цифры в сообщении
+		for i := 1; i <= 365; i++ {
+			if strings.Contains(message, fmt.Sprintf("%d", i)) {
+				horizon = i
+				break
+			}
+		}
+	}
+
+	return ticker, horizon
+}
+
+// Функция для отправки запроса к ML серверу в правильном формате
+func forwardToMLServer(mlReq MLRequest) (*MLResponse, error) {
+	// Формируем правильный запрос для PredictionHandler
+	jsonData, err := json.Marshal(mlReq)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ошибка маршалинга запроса: %v", err)
 	}
 
-	resp, err := http.Post("http://127.0.0.1:8080/predict",
+	fmt.Printf("Отправка запроса к ML серверу: %s\n", string(jsonData))
+
+	// Увеличиваем таймаут до 5 минут (300 секунд)
+	client := &http.Client{
+		Timeout: 300 * time.Second, // 5 минут
+	}
+
+	resp, err := client.Post("http://127.0.0.1:8080/predict",
 		"application/json",
 		bytes.NewBuffer(jsonData))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ошибка соединения с ML сервером: %v", err)
 	}
 	defer resp.Body.Close()
 
+	// Проверяем статус ответа
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("ML сервер вернул ошибку %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ошибка чтения ответа: %v", err)
 	}
+
+	fmt.Printf("Получен ответ от ML сервера (%d байт)\n", len(body))
 
 	var mlResponse MLResponse
 	if err := json.Unmarshal(body, &mlResponse); err != nil {
-		return nil, err
+		// Пробуем очистить JSON от лишних символов
+		cleanedBody := cleanJSON(string(body))
+		if err2 := json.Unmarshal([]byte(cleanedBody), &mlResponse); err2 != nil {
+			return nil, fmt.Errorf("ошибка парсинга JSON ответа: %v (после очистки: %v)", err, err2)
+		}
 	}
 
 	return &mlResponse, nil
 }
 
+// Функция для очистки JSON ответа
+func cleanJSON(jsonStr string) string {
+	// Удаляем markdown блоки кода
+	jsonStr = strings.TrimSpace(jsonStr)
+
+	// Удаляем ```json в начале
+	if strings.HasPrefix(jsonStr, "```json") {
+		jsonStr = strings.TrimPrefix(jsonStr, "```json")
+	}
+
+	// Удаляем ``` в начале и конце
+	jsonStr = strings.TrimPrefix(jsonStr, "```")
+	jsonStr = strings.TrimSuffix(jsonStr, "```")
+
+	// Удаляем лишние пробелы
+	jsonStr = strings.TrimSpace(jsonStr)
+
+	return jsonStr
+}
+
 // Функция возвращает тестовые данные, если ML сервер не доступен
-func getMockResponse() *MLResponse {
+func getMockResponse(ticker string, horizon int) *MLResponse {
+	// Базовые цены для разных тикеров
+	priceMap := map[string]float64{
+		"SBER": 280.5,
+		"GAZP": 160.3,
+		"LKOH": 7200.0,
+		"ROSN": 550.8,
+		"VTBR": 0.026,
+		"ALRS": 90.2,
+		"GMKN": 26000.0,
+		"NVTK": 1200.5,
+		"TATN": 380.7,
+		"YNDX": 2900.0,
+	}
+
+	currentPrice, ok := priceMap[ticker]
+	if !ok {
+		currentPrice = 123.4
+	}
+
 	return &MLResponse{
-		Ticker:  "SBER",
-		Horizon: 3,
+		Ticker:  ticker,
+		Horizon: horizon,
 		PredictedVolatility: PredictedVolatility{
 			Median:      0.024,
 			Lower1Sigma: 0.018,
@@ -193,17 +298,17 @@ func getMockResponse() *MLResponse {
 			Strength:   0.85,
 		},
 		Channel: Channel{
-			Upper2Sigma:  127.5,
-			Upper1Sigma:  125.8,
-			CurrentPrice: 123.4,
-			Lower1Sigma:  121.0,
-			Lower2Sigma:  119.3,
+			Upper2Sigma:  currentPrice * 1.033,
+			Upper1Sigma:  currentPrice * 1.019,
+			CurrentPrice: currentPrice,
+			Lower1Sigma:  currentPrice * 0.981,
+			Lower2Sigma:  currentPrice * 0.967,
 		},
 		TradingSignal: TradingSignal{
 			Action:       "BUY",
-			Entry:        121.0,
-			Target:       125.8,
-			StopLoss:     119.3,
+			Entry:        currentPrice * 0.981,
+			Target:       currentPrice * 1.019,
+			StopLoss:     currentPrice * 0.967,
 			PositionSize: 0.1,
 			Reason:       "Price at lower 1-sigma in uptrend",
 		},
@@ -219,7 +324,7 @@ func getMockResponse() *MLResponse {
 			VaPosition:    "inside",
 		},
 		Explanation: Explanation{
-			Text: "Волатильность повышена из-за роста исторической волатильности",
+			Text: fmt.Sprintf("Тестовые данные для %s на %d дней (ML сервер недоступен)", ticker, horizon),
 			TopFeatures: []Feature{
 				{Name: "realized_vol_20", Value: 0.022, Contribution: 0.008},
 				{Name: "beta_to_index", Value: 1.2, Contribution: 0.004},
