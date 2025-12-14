@@ -1,7 +1,7 @@
 # 📚 Документация ML Pipeline
 
-**Версия:** 2.0  
-**Дата обновления:** 2025-12-06
+**Версия:** 2.1  
+**Дата обновления:** 2025-01-XX (добавлен модуль объяснимости)
 
 ---
 
@@ -163,8 +163,42 @@ ML/
 | `scripts/run_full_pipeline.py` | Полный цикл: Features → Training → Inference |
 | `scripts/validate_model.py` | Валидация качества модели |
 | `scripts/compare_models.py` | Сравнение результатов экспериментов |
+| `scripts/test_explanation.py` | Тестирование модуля объяснимости и JSON контракта |
 
 **Подробнее:** `scripts/README.md`
+
+---
+
+## 🔍 Объяснимость прогнозов (NEW!)
+
+Система поддерживает генерацию текстовых объяснений прогнозов на русском языке через SHAP.
+
+**Использование:**
+```python
+from inference import GlobalQuantileModel
+
+model = GlobalQuantileModel()
+model.load_models()
+
+result = model.predict(
+    data.tail(1),
+    include_explanation=True,
+    background_data=data.tail(100)
+)
+
+print(result['explanation']['text'])
+```
+
+**Модули:**
+- `explainability/shap_wrapper.py` - SHAP объяснения
+- `explainability/text_generator.py` - Генератор текстов
+
+**Тестирование:**
+```bash
+python scripts/test_explanation.py
+```
+
+**Подробнее:** См. раздел "Объяснимость" в [SYSTEM_GUIDE.md](SYSTEM_GUIDE.md)
 
 ---
 

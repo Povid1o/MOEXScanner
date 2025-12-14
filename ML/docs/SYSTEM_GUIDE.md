@@ -1,7 +1,7 @@
 # 🔄 Гайд по взаимосвязям и работе системы
 
-**Версия:** 2.0  
-**Дата обновления:** 2025-12-06
+**Версия:** 2.1  
+**Дата обновления:** 2025-12-14 (добавлен модуль объяснимости)
 
 ---
 
@@ -116,12 +116,15 @@ feature_builder.py (главный модуль)
 2. Загрузка признаков для тикера
 3. Прогноз квантилей (q16, q50, q84)
 4. Опционально: ансамбль с GARCH
+5. Опционально: объяснения прогнозов через SHAP
 
 **Модули:**
 - `03_models/inference.py` (прогнозирование)
 - `models/ensemble.py` (ансамбль LightGBM + GARCH)
+- `explainability/shap_wrapper.py` (SHAP объяснения)
+- `explainability/text_generator.py` (текстовые объяснения)
 
-**Использование:**
+**Использование (базовый прогноз):**
 ```python
 from inference import GlobalQuantileModel
 
@@ -130,7 +133,75 @@ model.load_models()
 predictions = model.predict_ensemble(data)
 ```
 
-**Результат:** Прогнозы волатильности с интервалами
+**Использование (с объяснениями):**
+```python
+from inference import GlobalQuantileModel
+
+model = GlobalQuantileModel()
+model.load_models()
+
+# Прогноз с объяснениями
+result = model.predict(
+    data.tail(1),
+    include_explanation=True,
+    background_data=data.tail(100)  # Фоновые данные для SHAP
+)
+
+# result содержит:
+# - 'forecast': DataFrame с прогнозами (q16, q50, q84)
+# - 'explanation': Dict с текстовым объяснением и сырыми данными
+```
+
+**Результат:** 
+- Прогнозы волатильности с интервалами
+- Текстовые объяснения на русском языке
+- JSON структура для фронтенда
+
+---
+
+### Этап 4.5: Объяснимость прогнозов (NEW!)
+
+**Что происходит:**
+1. Инициализация SHAP TreeExplainer с фоновым датасетом
+2. Вычисление SHAP значений для каждого признака
+3. Генерация текстового объяснения на русском языке
+4. Формирование JSON структуры для фронтенда
+
+**Модули:**
+- `explainability/shap_wrapper.py` - `ShapExplainer` класс
+  - Ленивая инициализация TreeExplainer (оптимизация производительности)
+  - Метод `explain_local()` - вычисление SHAP значений
+  - Метод `format_explanation()` - форматирование в список словарей
+  
+- `explainability/text_generator.py` - `ExplanationGenerator` класс
+  - Словарь `FEATURE_DESCRIPTIONS` - переводы признаков на русский
+  - Метод `generate_text()` - генерация текстового объяснения
+  - Метод `generate_detailed_text()` - подробное объяснение с детализацией
+
+**Интеграция в inference.py:**
+- Метод `predict()` поддерживает параметр `include_explanation=True`
+- Автоматическая инициализация explainer при первом использовании
+- Обработка ошибок: при сбое объяснений возвращаются только прогнозы
+
+**Формат результата:**
+```python
+{
+    'forecast': DataFrame,  # Прогнозы q16, q50, q84
+    'explanation': {
+        'text': str,        # Текстовое объяснение на русском
+        'raw_data': List[Dict]  # Сырые данные для визуализации
+    }
+}
+```
+
+**Тестирование:**
+```bash
+python scripts/test_explanation.py
+```
+Скрипт проверяет:
+- Корректность работы объяснимости
+- Структуру JSON ответа
+- Обработку edge cases (NaN, нули)
 
 ---
 
@@ -228,6 +299,35 @@ python scripts/run_full_pipeline.py --skip-features --preset REGULARIZED
 python scripts/compare_models.py
 ```
 
+### Сценарий 4: Прогноз с объяснениями
+
+```bash
+# 1. Тестирование модуля объяснимости
+python scripts/test_explanation.py
+
+# 2. В Python коде
+from inference import GlobalQuantileModel
+import pandas as pd
+
+model = GlobalQuantileModel()
+model.load_models()
+
+# Загружаем данные
+df = pd.read_parquet("data/processed_ml/SBER_ml_features.parquet")
+
+# Прогноз с объяснениями
+result = model.predict(
+    df.tail(1),
+    include_explanation=True,
+    background_data=df.tail(100)
+)
+
+print(result['explanation']['text'])
+# Вывод: "Прогноз волатильности (15.00%) сформирован в основном 
+#         за счет внутридневного размаха цен (10 дней) и 
+#         инерции тренда (20 дней)."
+```
+
 ---
 
 ## 🔄 Потоки данных (детально)
@@ -278,9 +378,19 @@ data/models/global_lgbm_q*.txt
     ↓
 03_models/inference.py
     ├── GlobalQuantileModel.load_models()
-    └── model.predict_ensemble()
-    ↓
-data/models/{TICKER}_predictions.csv
+    ├── model.predict_ensemble()  # Базовый прогноз
+    └── model.predict(include_explanation=True)  # С объяснениями
+        ↓
+        explainability/shap_wrapper.py
+            ├── ShapExplainer (TreeExplainer)
+            └── explain_local() → SHAP значения
+        ↓
+        explainability/text_generator.py
+            ├── ExplanationGenerator
+            └── generate_detailed_text() → Текст на русском
+        ↓
+    JSON структура для фронтенда
+    data/models/{TICKER}_predictions.csv
 ```
 
 ---

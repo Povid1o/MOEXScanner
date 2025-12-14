@@ -6,6 +6,7 @@
 - Прогнозирования на новых данных
 - Получения интервального прогноза [q16, q84]
 - Ансамблевого прогноза (LightGBM + GARCH)
+- Объяснений прогнозов через SHAP (опционально)
 
 Использование (только LightGBM):
     from inference import GlobalQuantileModel
@@ -21,6 +22,15 @@
     
     predictions = model.predict_ensemble(new_data)
     # predictions содержит колонки: pred_q16, pred_q50, pred_q84, ensemble_*
+
+Использование (с объяснениями):
+    model = GlobalQuantileModel()
+    model.load_models()
+    
+    result = model.predict(new_data, include_explanation=True, background_data=X_train)
+    # result содержит:
+    #   - 'forecast': DataFrame с прогнозами
+    #   - 'explanation': Dict с текстовым объяснением и сырыми данными для визуализации
 """
 
 import numpy as np
@@ -43,6 +53,15 @@ except ImportError:
     ENSEMBLE_AVAILABLE = False
     warnings.warn("Модуль ensemble не найден. Ансамблевые методы недоступны.")
 
+# Импорты для объяснимости
+try:
+    from explainability.shap_wrapper import ShapExplainer
+    from explainability.text_generator import ExplanationGenerator
+    EXPLAINABILITY_AVAILABLE = True
+except ImportError:
+    EXPLAINABILITY_AVAILABLE = False
+    warnings.warn("Модули explainability не найдены. Объяснимость недоступна.")
+
 
 class GlobalQuantileModel:
     """
@@ -57,6 +76,8 @@ class GlobalQuantileModel:
         feature_names: List[str] - список признаков модели
         ensemble: EnsembleModel - ансамблевая модель (если включена)
         garch: SimpleGARCH - GARCH модель для ансамбля
+        explainer: ShapExplainer - объяснитель SHAP (ленивая инициализация)
+        text_generator: ExplanationGenerator - генератор текстовых объяснений
     """
     
     # Категориальные признаки (должны совпадать с train_global_model.py)
@@ -111,6 +132,13 @@ class GlobalQuantileModel:
             print(f"📦 Ансамблевый режим: LightGBM ({ensemble_weights['lgbm']}) + GARCH ({ensemble_weights['garch']})")
         elif use_ensemble and not ENSEMBLE_AVAILABLE:
             warnings.warn("Ансамбль запрошен, но модуль ensemble недоступен. Используется только LightGBM.")
+        
+        # Объяснимость (ленивая инициализация)
+        self.explainer: Optional['ShapExplainer'] = None
+        if EXPLAINABILITY_AVAILABLE:
+            self.text_generator = ExplanationGenerator()
+        else:
+            self.text_generator = None
     
     def load_models(self) -> None:
         """
@@ -137,20 +165,113 @@ class GlobalQuantileModel:
         
         print(f"📋 Признаков в модели: {len(self.feature_names)}")
     
+    def _init_explainer(
+        self,
+        background_data: Optional[pd.DataFrame] = None
+    ) -> None:
+        """
+        Ленивая инициализация SHAP explainer.
+        
+        Инициализирует explainer только один раз, используя медианную модель (q50).
+        Если background_data не предоставлен, TreeExplainer будет работать без фона
+        (с меньшей точностью base_value, но все еще функционален).
+        
+        Args:
+            background_data: Фоновый датасет для инициализации TreeExplainer.
+                           Если None, explainer инициализируется без фона.
+                           Рекомендуется использовать выборку из X_train (50-100 образцов).
+        """
+        if not EXPLAINABILITY_AVAILABLE:
+            raise RuntimeError(
+                "Объяснимость недоступна. Установите модули explainability."
+            )
+        
+        if self.explainer is not None:
+            # Уже инициализирован, пропускаем
+            return
+        
+        if not self._loaded:
+            raise RuntimeError(
+                "Модели не загружены! Вызовите load_models() сначала."
+            )
+        
+        # Используем медианную модель (q50) для объяснений
+        median_model = self.models[0.50]
+        
+        try:
+            if background_data is not None:
+                # Используем выборку из фоновых данных (50-100 образцов для скорости)
+                sample_size = min(100, len(background_data))
+                background_sample = background_data.sample(
+                    n=sample_size,
+                    random_state=42
+                ) if len(background_data) > sample_size else background_data
+                
+                # Подготавливаем данные так же, как в predict
+                background_prepared = background_sample[self.feature_names].copy()
+                
+                # Конвертируем категориальные признаки
+                for col in self.CATEGORICAL_FEATURES:
+                    if col in background_prepared.columns:
+                        background_prepared[col] = background_prepared[col].astype('category')
+                
+                # Заполняем NaN
+                numeric_cols = background_prepared.select_dtypes(include=[np.number]).columns
+                background_prepared[numeric_cols] = background_prepared[numeric_cols].fillna(0)
+                
+                self.explainer = ShapExplainer(
+                    median_model,
+                    background_prepared,
+                    feature_names=self.feature_names
+                )
+            else:
+                # Инициализация без фоновых данных (TreeExplainer поддерживает это)
+                # Создаем минимальный фоновый массив (одна строка нулей)
+                dummy_background = np.zeros((1, len(self.feature_names)))
+                self.explainer = ShapExplainer(
+                    median_model,
+                    dummy_background,
+                    feature_names=self.feature_names
+                )
+                warnings.warn(
+                    "SHAP explainer инициализирован без фоновых данных. "
+                    "base_value может быть менее точным. "
+                    "Рекомендуется передать background_data при первом вызове predict с include_explanation=True."
+                )
+        except Exception as e:
+            warnings.warn(
+                f"Не удалось инициализировать SHAP explainer: {e}. "
+                f"Объяснения будут недоступны."
+            )
+            self.explainer = None
+    
     def predict(
         self, 
         X: pd.DataFrame, 
-        return_interval: bool = True
-    ) -> pd.DataFrame:
+        return_interval: bool = True,
+        include_explanation: bool = False,
+        background_data: Optional[pd.DataFrame] = None
+    ) -> Union[pd.DataFrame, Dict]:
         """
-        Делает прогноз на новых данных.
+        Делает прогноз на новых данных с опциональными объяснениями.
         
         Args:
             X: DataFrame с признаками (должны совпадать с feature_names)
             return_interval: Если True, возвращает также ширину интервала
-            
+            include_explanation: Если True, возвращает словарь с прогнозом и объяснениями
+            background_data: Фоновый датасет для инициализации SHAP explainer
+                           (используется только при первом вызове с include_explanation=True)
+        
         Returns:
-            DataFrame с колонками: pred_q16, pred_q50, pred_q84, [interval_width]
+            Если include_explanation=False:
+                DataFrame с колонками: pred_q16, pred_q50, pred_q84, [interval_width]
+            
+            Если include_explanation=True:
+                Dict с ключами:
+                    - 'forecast': DataFrame с прогнозами
+                    - 'explanation': Dict с ключами:
+                        - 'text': str - текстовое объяснение
+                        - 'raw_data': List[Dict] - сырые данные для визуализации
         """
         if not self._loaded:
             raise RuntimeError("Модели не загружены! Вызовите load_models() сначала.")
@@ -184,7 +305,69 @@ class GlobalQuantileModel:
         if return_interval:
             predictions['interval_width'] = predictions['pred_q84'] - predictions['pred_q16']
         
-        return predictions
+        # Если объяснения не запрошены, возвращаем стандартный формат (обратная совместимость)
+        if not include_explanation:
+            return predictions
+        
+        # Генерируем объяснения
+        try:
+            # Инициализируем explainer, если еще не инициализирован
+            if self.explainer is None:
+                self._init_explainer(background_data=background_data)
+            
+            # Если explainer все еще None (ошибка инициализации), пропускаем объяснения
+            if self.explainer is None or self.text_generator is None:
+                warnings.warn(
+                    "SHAP explainer недоступен. Возвращаем только прогнозы без объяснений."
+                )
+                return predictions
+            
+            # Вычисляем объяснения для каждой строки
+            explanations_list = []
+            explanation_texts = []
+            
+            for idx in X.index:
+                # Получаем вектор признаков для текущей строки
+                features_vector = X_prepared.loc[idx]
+                
+                # Получаем объяснение
+                formatted_explanation = self.explainer.explain_and_format(
+                    features_vector,
+                    top_n=10  # Топ-10 признаков для объяснения
+                )
+                
+                # Получаем значение прогноза (q50)
+                q50_value = predictions.loc[idx, 'pred_q50']
+                
+                # Генерируем текстовое объяснение
+                explanation_text = self.text_generator.generate_detailed_text(
+                    formatted_explanation,
+                    prediction_value=q50_value,
+                    top_n=5
+                )
+                
+                explanations_list.append(formatted_explanation)
+                explanation_texts.append(explanation_text)
+            
+            # Формируем результат
+            result = {
+                'forecast': predictions,
+                'explanation': {
+                    'text': explanation_texts if len(explanation_texts) > 1 else explanation_texts[0],
+                    'raw_data': explanations_list if len(explanations_list) > 1 else explanations_list[0]
+                }
+            }
+            
+            return result
+            
+        except Exception as e:
+            # Если объяснения не удалось сгенерировать, возвращаем только прогнозы
+            # Это критично для production - не ломаем основной функционал
+            warnings.warn(
+                f"Не удалось сгенерировать объяснения: {e}. "
+                f"Возвращаем только прогнозы."
+            )
+            return predictions
     
     def predict_ensemble(
         self,

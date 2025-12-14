@@ -1,8 +1,8 @@
 # 📁 Полная структура системы ML Pipeline
 
-**Версия:** 2.0  
-**Дата обновления:** 2025-12-06  
-**Статус:** Актуальная
+**Версия:** 2.1  
+**Дата обновления:** 2025-12-14  
+**Статус:** Актуальная (добавлен модуль объяснимости)
 
 ---
 
@@ -27,6 +27,7 @@ ML/
 │   ├── run_full_pipeline.py      # Главный пайплайн (Features → Training → Inference)
 │   ├── validate_model.py         # Валидация модели
 │   ├── compare_models.py          # Сравнение результатов экспериментов
+│   ├── test_explanation.py        # Тестирование модуля объяснимости
 │   └── README.md                 # Документация скриптов
 │
 ├── 📓 notebooks/                  # Jupyter ноутбуки (исследования)
@@ -83,7 +84,9 @@ ML/
 │   └── __init__.py
 │
 ├── 🔬 explainability/             # Production: объяснимость
-│   └── __init__.py
+│   ├── __init__.py
+│   ├── shap_wrapper.py            # Обертка для SHAP объяснений
+│   └── text_generator.py          # Генератор текстовых объяснений
 │
 ├── ⚙️ config/                      # Конфигурация
 │   ├── training_config.py        # Параметры обучения (ГЛАВНЫЙ ФАЙЛ!)
@@ -162,8 +165,11 @@ reports/validation_report.csv
 data/processed_ml/{TICKER}_ml_features.parquet
     ↓
 03_models/inference.py
+    ├── Прогноз квантилей (q16, q50, q84)
+    └── Опционально: объяснения через explainability/
     ↓
 data/models/{TICKER}_predictions.csv
+JSON с прогнозами и объяснениями (для фронтенда)
 ```
 
 ---
@@ -197,6 +203,14 @@ data/models/{TICKER}_predictions.csv
 | `run_full_pipeline.py` | Полный цикл: Features → Training → Inference |
 | `validate_model.py` | Валидация качества модели |
 | `compare_models.py` | Сравнение результатов экспериментов |
+| `test_explanation.py` | Тестирование модуля объяснимости и JSON контракта |
+
+### explainability/ - Объяснимость моделей
+
+| Модуль | Описание |
+|--------|----------|
+| `shap_wrapper.py` | Обертка для SHAP TreeExplainer с оптимизацией производительности |
+| `text_generator.py` | Генератор текстовых объяснений на русском языке |
 
 ---
 
