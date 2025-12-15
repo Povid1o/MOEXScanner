@@ -244,6 +244,80 @@ class GlobalQuantileModel:
                 f"Объяснения будут недоступны."
             )
             self.explainer = None
+
+    def _build_importance_explanations(
+        self,
+        X_prepared: pd.DataFrame,
+        predictions: pd.DataFrame,
+        top_n: int = 10,
+    ):
+        """
+        Fallback-объяснения на основе feature importance LightGBM.
+
+        Используется, когда SHAP недоступен или падает. Возвращает
+        список объяснений по строкам и соответствующие текстовые описания.
+        """
+        try:
+            imp_df = self.get_feature_importance(importance_type="gain", top_n=top_n)
+        except Exception as e:
+            warnings.warn(f"Не удалось получить feature importance для fallback-объяснений: {e}")
+            return None, None
+
+        if imp_df.empty:
+            return None, None
+
+        total_imp = imp_df["importance"].sum()
+        if total_imp == 0:
+            return None, None
+
+        # Базовый список признаков с нормализованным вкладом (доля важности)
+        base_explanation = []
+        for _, row in imp_df.iterrows():
+            feature = row["feature"]
+            contribution = float(row["importance"] / total_imp)
+            base_explanation.append(
+                {
+                    "feature": feature,
+                    "value": None,  # заполним позже из X_prepared
+                    "contribution": contribution,
+                }
+            )
+
+        explanations_list = []
+        explanation_texts = []
+
+        for idx in X_prepared.index:
+            row_expl = []
+            for item in base_explanation:
+                feature = item["feature"]
+                value = (
+                    X_prepared.loc[idx, feature]
+                    if feature in X_prepared.columns
+                    else None
+                )
+                row_expl.append(
+                    {
+                        "feature": feature,
+                        "value": value,
+                        "contribution": item["contribution"],
+                    }
+                )
+
+            explanations_list.append(row_expl)
+
+            if self.text_generator is not None:
+                q50_value = float(predictions.loc[idx, "pred_q50"])
+                text = self.text_generator.generate_detailed_text(
+                    row_expl,
+                    prediction_value=q50_value,
+                    top_n=min(5, len(row_expl)),
+                )
+            else:
+                text = ""
+
+            explanation_texts.append(text)
+
+        return explanations_list, explanation_texts
     
     def predict(
         self, 
@@ -315,59 +389,102 @@ class GlobalQuantileModel:
             if self.explainer is None:
                 self._init_explainer(background_data=background_data)
             
-            # Если explainer все еще None (ошибка инициализации), пропускаем объяснения
+            # Если SHAP explainer недоступен — используем fallback на feature importance
             if self.explainer is None or self.text_generator is None:
                 warnings.warn(
-                    "SHAP explainer недоступен. Возвращаем только прогнозы без объяснений."
+                    "SHAP explainer недоступен. Используем fallback-объяснения на основе feature importance."
                 )
-                return predictions
-            
-            # Вычисляем объяснения для каждой строки
-            explanations_list = []
-            explanation_texts = []
-            
-            for idx in X.index:
-                # Получаем вектор признаков для текущей строки
-                features_vector = X_prepared.loc[idx]
-                
-                # Получаем объяснение
-                formatted_explanation = self.explainer.explain_and_format(
-                    features_vector,
-                    top_n=10  # Топ-10 признаков для объяснения
+                explanations_list, explanation_texts = self._build_importance_explanations(
+                    X_prepared,
+                    predictions,
+                    top_n=10,
                 )
+            else:
+                # Вычисляем SHAP-объяснения для каждой строки
+                explanations_list = []
+                explanation_texts = []
                 
-                # Получаем значение прогноза (q50)
-                q50_value = predictions.loc[idx, 'pred_q50']
-                
-                # Генерируем текстовое объяснение
-                explanation_text = self.text_generator.generate_detailed_text(
-                    formatted_explanation,
-                    prediction_value=q50_value,
-                    top_n=5
-                )
-                
-                explanations_list.append(formatted_explanation)
-                explanation_texts.append(explanation_text)
+                for idx in X.index:
+                    # Получаем вектор признаков для текущей строки
+                    features_vector = X_prepared.loc[idx]
+                    
+                    # Получаем объяснение
+                    formatted_explanation = self.explainer.explain_and_format(
+                        features_vector,
+                        top_n=10  # Топ-10 признаков для объяснения
+                    )
+                    
+                    # Если SHAP вернул пустой список, для этой строки используем fallback
+                    if not formatted_explanation:
+                        fallback_expl_list, _ = self._build_importance_explanations(
+                            X_prepared.loc[[idx]],
+                            predictions.loc[[idx]],
+                            top_n=10,
+                        )
+                        formatted_explanation = fallback_expl_list[0] if fallback_expl_list else []
+                    
+                    # Получаем значение прогноза (q50)
+                    q50_value = predictions.loc[idx, 'pred_q50']
+                    
+                    # Генерируем текстовое объяснение
+                    explanation_text = self.text_generator.generate_detailed_text(
+                        formatted_explanation,
+                        prediction_value=q50_value,
+                        top_n=5
+                    )
+                    
+                    explanations_list.append(formatted_explanation)
+                    explanation_texts.append(explanation_text)
             
             # Формируем результат
+            if explanations_list is None or explanation_texts is None:
+                # Полностью не удалось построить объяснения — возвращаем пустую структуру
+                explanation_payload = {
+                    'text': "",
+                    'raw_data': []
+                }
+            else:
+                explanation_payload = {
+                    'text': explanation_texts if len(explanation_texts) > 1 else explanation_texts[0],
+                    'raw_data': explanations_list if len(explanations_list) > 1 else explanations_list[0]
+                }
+
             result = {
+                'forecast': predictions,
+                'explanation': explanation_payload
+            }
+            
+            return result
+            
+        except Exception as e:
+            # Если объяснения не удалось сгенерировать через SHAP, пробуем fallback
+            warnings.warn(
+                f"Не удалось сгенерировать SHAP-объяснения: {e}. "
+                f"Пробуем fallback на основе feature importance."
+            )
+            explanations_list, explanation_texts = self._build_importance_explanations(
+                X_prepared,
+                predictions,
+                top_n=10,
+            )
+
+            if explanations_list is None or explanation_texts is None:
+                # Совсем не удалось получить объяснения
+                return {
+                    'forecast': predictions,
+                    'explanation': {
+                        'text': "",
+                        'raw_data': []
+                    }
+                }
+
+            return {
                 'forecast': predictions,
                 'explanation': {
                     'text': explanation_texts if len(explanation_texts) > 1 else explanation_texts[0],
                     'raw_data': explanations_list if len(explanations_list) > 1 else explanations_list[0]
                 }
             }
-            
-            return result
-            
-        except Exception as e:
-            # Если объяснения не удалось сгенерировать, возвращаем только прогнозы
-            # Это критично для production - не ломаем основной функционал
-            warnings.warn(
-                f"Не удалось сгенерировать объяснения: {e}. "
-                f"Возвращаем только прогнозы."
-            )
-            return predictions
     
     def predict_ensemble(
         self,

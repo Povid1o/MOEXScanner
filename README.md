@@ -409,38 +409,33 @@ dist_to_ema_20       ██████                             552.0
 ---
 
 ## 🔧 Backend
+Бэкенд состоит из двух уровней:
 
-<div align="center">
+- **Go Backend (`backend/`)** — HTTP‑API c использованием `gin`:
+  - `GET /health` — статус сервиса и подключения к PostgreSQL (и создание служебных таблиц `market_data`, `corporate_actions`).
+  - `POST /predict` — принимает JSON‑запрос с параметрами прогноза (`ticker`, `timeframe`, `horizon`, `date`), загружает 60 дней исторических данных с MOEX ISS API и формирует промпт для AI.
+  - В текущей реализации `PredictionHandler` ходит к LLM (DeepSeek через OpenRouter) и ожидает строго структурированный JSON с волатильностью, трендом, торговым сигналом и объяснением.
+- **Python ML Adapter (`app.py`)** — FastAPI‑сервис, который:
+  - Загружает обученную квантильную модель `GlobalQuantileModel` из `ML/03_models/inference.py`.
+  - Читает последние ML‑фичи по тикеру из `ML/data/processed_ml/*.parquet`.
+  - По запросу `POST /predict` (`{"ticker": "SBER"}`) строит квантильный прогноз `[q16, q50, q84]`, вычисляет 2‑сигма уровни, оценивает тренд, формирует торговый сигнал и хвостовой риск, а также готовит объяснение (top‑фичи).
 
-![Status](https://img.shields.io/badge/Status-В%20разработке-yellow?style=for-the-badge)
-
-</div>
-
-> 🚧 **Backend API находится в активной разработке**
-> 
-> Планируется:
-> - REST API для получения прогнозов
-> - WebSocket для real-time обновлений
-> - Интеграция с MOEX ISS API
-> - Кэширование и оптимизация
+> ℹ️ На следующем шаге Go‑бэкенд можно перенастроить так, чтобы вместо LLM ходить в Python‑адаптер (`http://localhost:8000/predict`), сохранив совместимость контрактов.
 
 ---
 
 ## 🎨 Frontend
+Фронтенд реализован как отдельный Go‑сервис (`front/front.go`) на `gin`:
 
-<div align="center">
+- Рендерит страницу `templates/index.html` по `GET /` — это одностраничный чат‑интерфейс **AI Trading Assistant**:
+  - Слева — чат с пользователем (сообщения, объяснения, сигналы).
+  - Справа — панель `Trading Signal` и график ценовых уровней (`-2σ, -1σ, текущая, +1σ, +2σ`) на `Chart.js`.
+- JS‑код на странице:
+  - Отправляет текстовые запросы пользователя на `POST /api/chat` (например: `"SBER прогноз на 3 дня"`).
+  - Бэкенд‑фронтенда парсит тикер и горизонт, формирует запрос к ML‑сервису (по умолчанию `http://127.0.0.1:8080/predict`) и возвращает структурированный JSON.
+  - Ответ визуализируется: тренд, уверенность, ценовой канал, торговый сигнал, хвостовой риск и вклад ключевых признаков.
 
-![Status](https://img.shields.io/badge/Status-В%20разработке-yellow?style=for-the-badge)
-
-</div>
-
-> 🚧 **Frontend UI находится в активной разработке**
-> 
-> Планируется:
-> - Dashboard с обзором рынка
-> - Интерактивные графики волатильности
-> - Визуализация торговых сигналов
-> - Мониторинг портфеля
+Фронтенд и бэкенд Go могут работать как прокси‑слой над Python‑адаптером, предоставляя пользователю готовый трейдинговый UI.
 
 ---
 
@@ -470,6 +465,55 @@ pip install -r requirements.txt
 # 5. Проверка установки
 python test_setup.py
 ```
+
+### Запуск всего проекта (ML + Python Adapter + Go Backend + Frontend)
+
+1. **ML‑окружение и модели**
+   - Перейти в директорию `ML` и активировать виртуальное окружение:
+     ```powershell
+     cd ML
+     .\venv\Scripts\Activate.ps1
+     ```
+   - Установить зависимости (если ещё не установлены):
+     ```powershell
+     pip install -r requirements.txt
+     ```
+   - Обучить или проверить наличие моделей в `ML/data/models` (при необходимости запустить `python scripts/run_full_pipeline.py`).
+
+2. **Запуск Python‑адаптера (`app.py`)**
+   - Установить FastAPI и Uvicorn (один раз):
+     ```powershell
+     pip install fastapi "uvicorn[standard]"
+     ```
+   - Из корня репозитория (`MOEXScanner`) запустить сервис:
+     ```powershell
+     cd ..
+     python -m uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+     ```
+   - Проверить `http://localhost:8000/health` — поле `model_loaded` должно быть `true`.
+
+3. **Запуск Go Backend**
+   - Перейти в директорию `backend`:
+     ```powershell
+     cd backend
+     go mod tidy
+     go run back.go
+     ```
+   - По умолчанию сервер поднимется на `http://localhost:8080`.  
+     При интеграции с Python‑адаптером эндпоинт `POST /predict` можно перенастроить на `http://localhost:8000/predict`.
+
+4. **Запуск Go Frontend**
+   - В отдельном терминале перейти в директорию `front`:
+     ```powershell
+     cd front
+     go mod tidy
+     go run front.go
+     ```
+   - Фронтенд будет доступен по адресу `http://localhost:8081`.
+
+5. **Полный поток**
+   - Пользователь открывает `http://localhost:8081` и общается с AI Trading Assistant.
+   - Frontend (`/api/chat`) → Go Backend (`/predict`) → Python Adapter (`/predict`) → `GlobalQuantileModel` → обратно в UI.
 
 ### Зависимости
 
@@ -585,7 +629,7 @@ LGBM_PARAMS = {
 
 <div align="center">
 
-![Last Updated](https://img.shields.io/badge/Last%20Updated-2025--12--06-blue?style=for-the-badge)
+![Last Updated](https://img.shields.io/badge/Last%20Updated-2025--12--15-blue?style=for-the-badge)
 ![Model Version](https://img.shields.io/badge/Model-MORE_TRAIN-green?style=for-the-badge)
 
 </div>

@@ -76,43 +76,32 @@ class ShapExplainer:
         
         # Получаем имена признаков из модели, если не указаны
         if feature_names is None:
-            self.feature_names = model.feature_name()
+            # Для LightGBM Booster есть метод feature_name()
+            try:
+                self.feature_names = model.feature_name()
+            except Exception:
+                self.feature_names = None
         else:
             self.feature_names = feature_names
         
-        # Преобразуем background_data в правильный формат
-        if isinstance(background_data, pd.DataFrame):
-            # Проверяем, что все признаки присутствуют
-            missing = set(self.feature_names) - set(background_data.columns)
-            if missing:
-                raise ValueError(
-                    f"Отсутствуют признаки в background_data: {missing}"
-                )
-            # Берем только нужные признаки в правильном порядке
-            background_array = background_data[self.feature_names].values
-        elif isinstance(background_data, np.ndarray):
-            background_array = background_data
-            if background_array.shape[1] != len(self.feature_names):
-                raise ValueError(
-                    f"Несоответствие размерности: "
-                    f"background_data имеет {background_array.shape[1]} признаков, "
-                    f"модель ожидает {len(self.feature_names)}"
-                )
-        else:
-            raise TypeError(
-                f"background_data должен быть pd.DataFrame или np.ndarray, "
-                f"получен {type(background_data)}"
-            )
-        
-        # Создаем TreeExplainer один раз при инициализации
-        # Это оптимизирует производительность - explainer не пересоздается
-        # на каждом вызове explain_local
-        print(f"🔧 Инициализация SHAP TreeExplainer с {len(background_array)} фоновыми образцами...")
-        self.explainer = shap.TreeExplainer(
-            model,
-            background_array,
-            feature_perturbation="tree_path_dependent"  # Быстрый режим для TreeExplainer
+        # В современных версиях SHAP (>=0.40) рекомендуется использовать общий
+        # интерфейс shap.Explainer, который сам выбирает оптимальный тип
+        # объяснителя (TreeExplainer для деревьев и т.п.).
+        #
+        # Мы передаем background_data "как есть" (DataFrame или ndarray) —
+        # Explainer сам построит masker и корректно обработает данные.
+        print(
+            f"🔧 Инициализация SHAP Explainer "
+            f"(тип данных фона: {type(background_data).__name__})..."
         )
+        self.explainer = shap.Explainer(model, background_data)
+        
+        # Обновляем feature_names из explainer, если они доступны
+        if getattr(self.explainer, "feature_names", None) is not None:
+            self.feature_names = list(self.explainer.feature_names)
+        
+        if self.feature_names is None:
+            raise ValueError("Не удалось определить имена признаков для SHAP.")
         
         print(f"✅ SHAP Explainer готов. Признаков: {len(self.feature_names)}")
     
@@ -197,34 +186,33 @@ class ShapExplainer:
                 f"получен {type(features_vector)}"
             )
         
-        # Вычисляем SHAP значения (быстро, т.к. explainer уже создан)
-        shap_values = self.explainer.shap_values(feature_array)
+        # Вычисляем SHAP значения через общий интерфейс Explainer
+        explanation_obj = self.explainer(feature_array)
         
-        # TreeExplainer возвращает массив, берем первую строку
-        if isinstance(shap_values, list):
-            # Для мультиклассовых моделей shap_values - список
-            shap_array = shap_values[0] if len(shap_values) > 0 else shap_values
-        else:
-            shap_array = shap_values
-        
-        # Для одной строки shap_array может быть 1D или 2D
+        # explanation_obj.values: (1, n_features) для регрессии
+        shap_array = explanation_obj.values
         if shap_array.ndim == 2:
             shap_array = shap_array[0]
         
-        # Получаем базовое значение
-        base_value = float(self.explainer.expected_value)
+        # Базовое значение (expected value) из Explanation
+        base_value = explanation_obj.base_values
+        if isinstance(base_value, np.ndarray):
+            base_value = float(base_value.ravel()[0])
+        else:
+            base_value = float(base_value)
         
-        # Если expected_value - массив (мультикласс), берем первый элемент
-        if isinstance(base_value, (list, np.ndarray)):
-            base_value = float(base_value[0])
-        
-        # Вычисляем прогноз модели
+        # Вычисляем прогноз модели (для консистентности с остальным кодом)
         prediction = float(self.model.predict(feature_array)[0])
+        
+        # Обновляем имена признаков из explanation, если они есть
+        feature_names = self.feature_names
+        if getattr(explanation_obj, "feature_names", None) is not None:
+            feature_names = list(explanation_obj.feature_names)
         
         return {
             'shap_values': shap_array,
             'base_value': base_value,
-            'feature_names': self.feature_names.copy(),
+            'feature_names': feature_names,
             'prediction': prediction
         }
     
