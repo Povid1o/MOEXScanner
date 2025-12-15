@@ -409,33 +409,291 @@ dist_to_ema_20       ██████                             552.0
 ---
 
 ## 🔧 Backend
-Бэкенд состоит из двух уровней:
+Бэкенд состоит из двух уровней: **Go API‑шлюз** и **Python ML‑адаптер**.
 
-- **Go Backend (`backend/`)** — HTTP‑API c использованием `gin`:
-  - `GET /health` — статус сервиса и подключения к PostgreSQL (и создание служебных таблиц `market_data`, `corporate_actions`).
-  - `POST /predict` — принимает JSON‑запрос с параметрами прогноза (`ticker`, `timeframe`, `horizon`, `date`), загружает 60 дней исторических данных с MOEX ISS API и формирует промпт для AI.
-  - В текущей реализации `PredictionHandler` ходит к LLM (DeepSeek через OpenRouter) и ожидает строго структурированный JSON с волатильностью, трендом, торговым сигналом и объяснением.
-- **Python ML Adapter (`app.py`)** — FastAPI‑сервис, который:
-  - Загружает обученную квантильную модель `GlobalQuantileModel` из `ML/03_models/inference.py`.
-  - Читает последние ML‑фичи по тикеру из `ML/data/processed_ml/*.parquet`.
-  - По запросу `POST /predict` (`{"ticker": "SBER"}`) строит квантильный прогноз `[q16, q50, q84]`, вычисляет 2‑сигма уровни, оценивает тренд, формирует торговый сигнал и хвостовой риск, а также готовит объяснение (top‑фичи).
+### Go Backend (`backend/`)
 
-> ℹ️ На следующем шаге Go‑бэкенд можно перенастроить так, чтобы вместо LLM ходить в Python‑адаптер (`http://localhost:8000/predict`), сохранив совместимость контрактов.
+Работает на `gin`, по умолчанию слушает порт **8080**.
+
+- **Основные файлы**
+  - `back.go` — точка входа, инициализирует `gin.Engine`, регистрирует роуты через `api_contracts.SetupRoutes`.
+  - `api_contracts/contracts.go` — описание маршрутов.
+  - `api_contracts/structs.go` — структуры запросов/ответов.
+  - `api_contracts/handlers.go` — бизнес‑логика эндпоинтов.
+  - `src/moex_cals.go` — обращение к MOEX ISS API.
+  - `src/ai_cals.go` — вызов внешней LLM (DeepSeek через OpenRouter).
+  - `src/db/db.go` — подключение к PostgreSQL и создание таблиц.
+
+- **Маршруты (`api_contracts.SetupRoutes`)**
+  - `GET /health` → `HealthHandler.CheckHealth`
+  - `GET /features/:ticker` → `FeaturesHandler.GetFeatures` (пока заглушка)
+  - `POST /predict` → `PredictionHandler.Predict`
+  - `POST /backtest` → `BacktestHandler.RunBacktest` (TODO)
+  - `POST /update_data` → `DataHandler.UpdateData` (TODO)
+
+- **Структуры запросов и ответов (упрощённо)**  
+  **Запрос на прогноз:**
+  ```go
+  type PredictionRequest struct {
+      Ticker      string `json:"ticker" binding:"required"`
+      Timeframe   string `json:"timeframe" binding:"required"`        // "D"
+      Horizon     int    `json:"horizon" binding:"required,min=1,max=30"`
+      Date        string `json:"date" binding:"required"`             // "YYYY-MM-DD"
+      IncludeSHAP bool   `json:"include_shap"`                         // пока не используется
+  }
+  ```
+
+  **Ответ AI/ML‑сервиса (`PredictionResponse`):**
+  ```go
+  type PredictedVolatility struct {
+      Median      float64 `json:"median"`
+      Lower1Sigma float64 `json:"lower_1sigma"`
+      Upper1Sigma float64 `json:"upper_1sigma"`
+      Lower2Sigma float64 `json:"lower_2sigma"`
+      Upper2Sigma float64 `json:"upper_2sigma"`
+  }
+
+  type Trend struct {
+      Direction  string  `json:"direction"`   // "uptrend"/"downtrend"/"sideways"
+      Confidence string  `json:"confidence"`  // "high"/"medium"/"low"
+      Strength   float64 `json:"strength"`    // 0..1
+  }
+
+  type Channel struct {
+      Upper2Sigma  float64 `json:"upper_2sigma"`
+      Upper1Sigma  float64 `json:"upper_1sigma"`
+      CurrentPrice float64 `json:"current_price"`
+      Lower1Sigma  float64 `json:"lower_1sigma"`
+      Lower2Sigma  float64 `json:"lower_2sigma"`
+  }
+
+  type TradingSignal struct {
+      Action       string  `json:"action"`        // "BUY"/"SELL"/"HOLD"/"WAIT"
+      Entry        float64 `json:"entry"`
+      Target       float64 `json:"target"`
+      StopLoss     float64 `json:"stop_loss"`
+      PositionSize float64 `json:"position_size"` // 0..1
+      Reason       string  `json:"reason"`
+  }
+
+  type TailRisk struct {
+      Warning      bool     `json:"warning"`
+      Probability  float64  `json:"probability"`   // 0..1
+      ExpectedLoss *float64 `json:"expected_loss"` // может быть null
+  }
+
+  type Feature struct {
+      Name         string  `json:"name"`
+      Value        float64 `json:"value"`
+      Contribution float64 `json:"contribution"`
+  }
+
+  type Explanation struct {
+      Text        string    `json:"text"`
+      TopFeatures []Feature `json:"top_features"`
+  }
+
+  type VolumeContext struct {
+      Zscore        float64 `json:"zscore"`
+      SpikeDetected bool    `json:"spike_detected"`
+      PocDistance   float64 `json:"poc_distance"`
+      VaPosition    string  `json:"va_position"` // "inside/above/below"
+  }
+
+  type PredictionResponse struct {
+      Ticker              string              `json:"ticker"`
+      Horizon             int                 `json:"horizon"`
+      PredictedVolatility PredictedVolatility `json:"predicted_volatility"`
+      Confidence          float64             `json:"confidence"`       // 0..1
+      Trend               Trend               `json:"trend"`
+      Channel             Channel             `json:"channel"`
+      TradingSignal       TradingSignal       `json:"trading_signal"`
+      TailRisk            TailRisk            `json:"tail_risk"`
+      VolumeContext       VolumeContext       `json:"volume_context"`
+      Explanation         Explanation         `json:"explanation"`
+  }
+  ```
+
+- **Как работает `POST /predict` сейчас**
+  1. Валидирует JSON по `PredictionRequest`.
+  2. Берёт дату `Date` и строит период `[Date-60d, Date]`.
+  3. Вызывает `src.GetCandles(ticker, from, till, interval=24)` → HTTP к `https://iss.moex.com/.../candles.json`.
+  4. Оборачивает свечи в JSON и подставляет в большой русскоязычный промпт для AI.
+  5. Через `src.Ai_send_request` шлёт промпт на `https://openrouter.ai/api/v1/chat/completions` (модель DeepSeek).
+  6. Очищает ответ от markdown/процентов, пытается распарсить в `PredictionResponse`, при ошибке возвращает fallback‑структуру.
+
+### Python ML Adapter (`app.py`)
+
+FastAPI‑сервис, который можно запустить на порту **8000** и использовать как «истинный» ML‑бэкенд для Go‑слоя.
+
+- **Контракт ответа (Python, Pydantic)**  
+  Адаптер строит своё представление прогноза, которое по смыслу совпадает с Go‑структурами, но более «Python‑friendly»:
+  ```python
+  class PredictedVolatility(BaseModel):
+      median: float          # q50
+      lower_1sigma: float    # q16
+      upper_1sigma: float    # q84
+      lower_2sigma: float    # q50 - 2*(q50-q16)
+      upper_2sigma: float    # q50 + 2*(q84-q50)
+
+  class Trend(BaseModel):
+      direction: str         # "UP", "DOWN", "SIDE"
+      confidence: str        # "HIGH", "MEDIUM", "LOW"
+      strength: float        # 0.0–1.0
+
+  class TradingSignal(BaseModel):
+      action: str            # "BUY", "SELL", "HOLD", "WAIT"
+      entry: float
+      target: float
+      stop_loss: float
+      reason: str
+
+  class TailRisk(BaseModel):
+      warning: bool
+      probability: float
+      expected_loss: float
+
+  class FeatureContribution(BaseModel):
+      name: str
+      impact: str            # "positive" / "negative"
+      description: str
+      value: float
+
+  class Explanation(BaseModel):
+      summary: str
+      top_features: List[FeatureContribution]
+
+  class PredictionResponse(BaseModel):
+      ticker: str
+      date: str
+      current_price: float
+      volatility: PredictedVolatility
+      trend: Trend
+      signal: TradingSignal
+      tail_risk: TailRisk
+      explanation: Explanation
+  ```
+
+- **Эндпоинты FastAPI**
+  - `GET /health` → `{"status": "ok", "model_loaded": true/false}`.
+  - `POST /predict` → `PredictionResponse`.
+
+- **Пайплайн внутри `POST /predict`**
+  1. Принимает `{"ticker": "SBER"}`.
+  2. Находит parquet‑файл фичей в `ML/data/processed_ml` (шаблон `SBER_ml_features.parquet` или любой файл, содержащий тикер в имени).
+  3. Загружает DataFrame, фильтрует по `ticker` (если есть колонка), сортирует по `date`/`timestamp` (если есть).
+  4. Берёт **последнюю строку** и подаёт её в `GlobalQuantileModel.predict(..., include_explanation=True)`.
+  5. Извлекает `pred_q16`, `pred_q50`, `pred_q84` и объект `explanation` (`text` + список признаков с вкладом).
+  6. Строит:
+     - квантильную волатильность и 2‑сигма уровни;
+     - тренд (через сравнение `close` с `sma_50/ma_50` или `open`);
+     - торговый сигнал по rule‑based логике (см. комментарии в `app.py`);
+     - хвостовой риск по асимметрии интервала;
+     - список top‑фич по модулю вклада.
+
+> ℹ️ На следующем шаге Go‑бэкенд можно перенастроить так, чтобы вместо LLM ходить в Python‑адаптер (`http://localhost:8000/predict`), сохранив логическую структуру ответов и текущий фронтенд.
 
 ---
 
 ## 🎨 Frontend
-Фронтенд реализован как отдельный Go‑сервис (`front/front.go`) на `gin`:
+Фронтенд реализован как отдельный Go‑сервис (`front/front.go`) на `gin`, по умолчанию слушает порт **8081**.
 
-- Рендерит страницу `templates/index.html` по `GET /` — это одностраничный чат‑интерфейс **AI Trading Assistant**:
-  - Слева — чат с пользователем (сообщения, объяснения, сигналы).
-  - Справа — панель `Trading Signal` и график ценовых уровней (`-2σ, -1σ, текущая, +1σ, +2σ`) на `Chart.js`.
-- JS‑код на странице:
-  - Отправляет текстовые запросы пользователя на `POST /api/chat` (например: `"SBER прогноз на 3 дня"`).
-  - Бэкенд‑фронтенда парсит тикер и горизонт, формирует запрос к ML‑сервису (по умолчанию `http://127.0.0.1:8080/predict`) и возвращает структурированный JSON.
-  - Ответ визуализируется: тренд, уверенность, ценовой канал, торговый сигнал, хвостовой риск и вклад ключевых признаков.
+### Структура фронтенда
 
-Фронтенд и бэкенд Go могут работать как прокси‑слой над Python‑адаптером, предоставляя пользователю готовый трейдинговый UI.
+- **Основные компоненты**
+  - `front.go` — HTTP‑сервер:
+    - `GET /` — рендерит HTML‑шаблон `templates/index.html`.
+    - `POST /api/chat` — принимает пользовательское текстовое сообщение, преобразует его в запрос к ML‑бэкенду и возвращает JSON в формате, который ожидает JS на странице.
+  - `templates/index.html` — одностраничный UI:
+    - блок чата (история сообщений),
+    - панель `Trading Signal`,
+    - график уровней цен (`Chart.js`),
+    - статусные сообщения / ошибки.
+
+### Как работает `POST /api/chat`
+
+1. Браузер отправляет запрос:
+   ```json
+   { "message": "SBER прогноз на 3 дня" }
+   ```
+2. В `front.go` сообщение разбирается функцией `parseUserMessage`:
+   - из текста вытаскивается тикер (из списка: `SBER`, `GAZP`, `LKOH`, `ROSN`, `VTBR`, `ALRS`, `GMKN`, `NVTK`, `TATN`, `YNDX`);
+   - определяется горизонт (3 дня по умолчанию, неделя/месяц/конкретные числа по ключевым словам).
+3. Формируется запрос к ML‑бэкенду:
+   ```json
+   {
+     "ticker": "SBER",
+     "timeframe": "D",
+     "horizon": 3,
+     "date": "YYYY-MM-DD"
+   }
+   ```
+   и отправляется POST на `http://127.0.0.1:8080/predict` (или на Python‑адаптер, если Go‑бэкенд будет проксировать).
+4. Ответ ML‑сервиса маппится в структуру `MLResponse` (аналог `PredictionResponse`) и возвращается в браузер.
+5. JS‑код в `index.html`:
+   - добавляет сообщение пользователя в историю чата;
+   - рендерит ответ AI‑ассистента: текстовое объяснение, тренд, волатильность, торговый сигнал, ключевые фичи;
+   - обновляет бар‑чарт уровней цен и правую панель `Trading Signal` (entry/target/stop‑loss, confidence, trend).
+
+### Формат ответа, который ожидает фронтенд
+
+Фронтенд JS ожидает, что ML‑сервис вернёт JSON со следующими полями (ключевые поля):
+
+```json
+{
+  "ticker": "SBER",
+  "horizon": 3,
+  "predicted_volatility": {
+    "median": 0.02,
+    "lower_1sigma": 0.015,
+    "upper_1sigma": 0.025,
+    "lower_2sigma": 0.01,
+    "upper_2sigma": 0.03
+  },
+  "confidence": 0.7,
+  "trend": {
+    "direction": "uptrend",
+    "confidence": "high",
+    "strength": 0.8
+  },
+  "channel": {
+    "upper_2sigma": 310.0,
+    "upper_1sigma": 305.0,
+    "current_price": 300.0,
+    "lower_1sigma": 295.0,
+    "lower_2sigma": 290.0
+  },
+  "trading_signal": {
+    "action": "BUY",
+    "entry": 295.0,
+    "target": 305.0,
+    "stop_loss": 290.0,
+    "position_size": 0.1,
+    "reason": "Price at lower 1-sigma in uptrend"
+  },
+  "tail_risk": {
+    "warning": false,
+    "probability": 0.03,
+    "expected_loss": null
+  },
+  "volume_context": {
+    "zscore": 0.8,
+    "spike_detected": false,
+    "poc_distance": -0.02,
+    "va_position": "inside"
+  },
+  "explanation": {
+    "text": "Аналитический вывод...",
+    "top_features": [
+      { "name": "realized_vol_20", "value": 0.022, "contribution": 0.008 },
+      { "name": "beta_to_index", "value": 1.2, "contribution": 0.004 },
+      { "name": "volume_zscore", "value": 0.8, "contribution": 0.003 }
+    ]
+  }
+}
+```
+
+Фронтенд и Go‑бэкенд таким образом выступают как UI‑/API‑прослойка над Python‑моделью, обеспечивая стабильный контракт и удобный трейдинговый интерфейс.
 
 ---
 
