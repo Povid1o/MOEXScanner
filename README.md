@@ -3,13 +3,14 @@
 <div align="center">
 
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=for-the-badge&logo=go&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.109-009688?style=for-the-badge&logo=fastapi&logoColor=white)
 ![LightGBM](https://img.shields.io/badge/LightGBM-4.6-9ACD32?style=for-the-badge)
-![Pandas](https://img.shields.io/badge/Pandas-2.3-150458?style=for-the-badge&logo=pandas&logoColor=white)
-![NumPy](https://img.shields.io/badge/NumPy-2.3-013243?style=for-the-badge&logo=numpy&logoColor=white)
-![Jupyter](https://img.shields.io/badge/Jupyter-Lab-F37626?style=for-the-badge&logo=jupyter&logoColor=white)
+![Gin](https://img.shields.io/badge/Gin-1.9-00ADD8?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
 
-**Система прогнозирования волатильности акций Московской биржи на основе машинного обучения**
+**Microservices система прогнозирования волатильности акций Московской биржи**  
+**ML Engine (Python + LightGBM + GARCH) + API Gateway (Go) + Web UI (Go + Gin)**
 
 [Особенности](#-особенности) •
 [Архитектура](#-архитектура) •
@@ -95,8 +96,26 @@ MOEXScanner/
 │   │
 │   └── tools/                   # 🛠️ Вспомогательные скрипты
 │
-├── backend/                     # 🔧 Backend API (в разработке)
-└── frontend/                    # 🎨 Frontend UI (в разработке)
+├── backend/                     # 🔧 Backend API Gateway (✅ Production)
+└── front/                       # 🎨 Frontend UI (✅ Production)
+```
+
+### Microservices Flow
+
+```mermaid
+graph LR
+    A[👤 User Browser<br/>:8081] --> B[🎨 Frontend<br/>Go + Gin<br/>:8081]
+    B --> C[🔧 Backend Gateway<br/>Go + Gin<br/>:8080]
+    C --> D[🧠 ML Engine<br/>Python + FastAPI<br/>:8000]
+    D --> E[📊 MOEX API<br/>iss.moex.com]
+    D --> F[🤖 LightGBM + GARCH<br/>Models]
+    
+    style A fill:#e1f5ff
+    style B fill:#b3e5fc
+    style C fill:#81d4fa
+    style D fill:#4fc3f7
+    style E fill:#29b6f6
+    style F fill:#039be5
 ```
 
 ---
@@ -408,12 +427,16 @@ dist_to_ema_20       ██████                             552.0
 
 ---
 
-## 🔧 Backend
-Бэкенд состоит из двух уровней: **Go API‑шлюз** и **Python ML‑адаптер**.
+## 🔧 Backend (Production Ready)
 
-### Go Backend (`backend/`)
+Бэкенд состоит из двух уровней: **Go API Gateway** и **Python ML Engine**.
 
-Работает на `gin`, по умолчанию слушает порт **8080**.
+### Go Backend Gateway (`backend/`)
+
+**Статус:** ✅ Production  
+**Технологии:** Go + Gin  
+**Порт:** 8080  
+**Назначение:** Data Gateway — загружает исторические данные с MOEX (365 дней) и проксирует запросы к ML Engine.
 
 - **Основные файлы**
   - `back.go` — точка входа, инициализирует `gin.Engine`, регистрирует роуты через `api_contracts.SetupRoutes`.
@@ -514,17 +537,19 @@ dist_to_ema_20       ██████                             552.0
   }
   ```
 
-- **Как работает `POST /predict` сейчас**
+- **Как работает `POST /predict`**
   1. Валидирует JSON по `PredictionRequest`.
-  2. Берёт дату `Date` и строит период `[Date-60d, Date]`.
+  2. Берёт дату `Date` и строит период `[Date-365d, Date]` (увеличено с 60 до 365 дней для ML-признаков).
   3. Вызывает `src.GetCandles(ticker, from, till, interval=24)` → HTTP к `https://iss.moex.com/.../candles.json`.
-  4. Оборачивает свечи в JSON и подставляет в большой русскоязычный промпт для AI.
-  5. Через `src.Ai_send_request` шлёт промпт на `https://openrouter.ai/api/v1/chat/completions` (модель DeepSeek).
-  6. Очищает ответ от markdown/процентов, пытается распарсить в `PredictionResponse`, при ошибке возвращает fallback‑структуру.
+  4. Формирует JSON payload и отправляет POST на Python ML Engine (`http://127.0.0.1:8000/predict`).
+  5. Получает `PredictionResponse` от ML Engine и возвращает клиенту.
 
-### Python ML Adapter (`app.py`)
+### Python ML Engine (`ML/scripts/serve_model.py`)
 
-FastAPI‑сервис, который можно запустить на порту **8000** и использовать как «истинный» ML‑бэкенд для Go‑слоя.
+**Статус:** ✅ Production  
+**Технологии:** Python + FastAPI + LightGBM + GARCH  
+**Порт:** 8000  
+**Назначение:** AI Core — генерация признаков, inference, торговые сигналы, SHAP explanations.
 
 - **Контракт ответа (Python, Pydantic)**  
   Адаптер строит своё представление прогноза, которое по смыслу совпадает с Go‑структурами, но более «Python‑friendly»:
@@ -579,24 +604,29 @@ FastAPI‑сервис, который можно запустить на пор
   - `POST /predict` → `PredictionResponse`.
 
 - **Пайплайн внутри `POST /predict`**
-  1. Принимает `{"ticker": "SBER"}`.
-  2. Находит parquet‑файл фичей в `ML/data/processed_ml` (шаблон `SBER_ml_features.parquet` или любой файл, содержащий тикер в имени).
-  3. Загружает DataFrame, фильтрует по `ticker` (если есть колонка), сортирует по `date`/`timestamp` (если есть).
-  4. Берёт **последнюю строку** и подаёт её в `GlobalQuantileModel.predict(..., include_explanation=True)`.
-  5. Извлекает `pred_q16`, `pred_q50`, `pred_q84` и объект `explanation` (`text` + список признаков с вкладом).
-  6. Строит:
-     - квантильную волатильность и 2‑сигма уровни;
-     - тренд (через сравнение `close` с `sma_50/ma_50` или `open`);
-     - торговый сигнал по rule‑based логике (см. комментарии в `app.py`);
-     - хвостовой риск по асимметрии интервала;
-     - список top‑фич по модулю вклада.
-
-> ℹ️ На следующем шаге Go‑бэкенд можно перенастроить так, чтобы вместо LLM ходить в Python‑адаптер (`http://localhost:8000/predict`), сохранив логическую структуру ответов и текущий фронтенд.
+  1. Принимает `{"ticker": "SBER", "horizon": 5, "candles": [...]}` от Go Backend.
+  2. Строит DataFrame из свечей и генерирует **~66 признаков** через `build_dataframe()`.
+  3. Загружает `GlobalQuantileModel` (ensemble: 70% LightGBM + 30% GARCH).
+  4. Делает inference и получает квантили волатильности: `[pred_q16, pred_q50, pred_q84]`.
+  5. Де-аннуализирует волатильность (Square Root of Time Rule) для горизонта прогноза.
+  6. Строит симметричные ценовые каналы вокруг `current_price`.
+  7. Генерирует **профессиональные торговые сигналы**:
+     - Определяет тренд по `pred_price_median_up > current_price`
+     - Рассчитывает smart entry (Limit Order на откате/ралли)
+     - Устанавливает Target и Stop Loss по границам волатильности
+     - Применяет фильтр Risk/Reward (>=1.2)
+  8. Извлекает Volume Context (`volume_zscore`, `spike_detected`, `va_position`) из признаков.
+  9. Генерирует SHAP explanation с топ-фичами.
+  10. Возвращает полный `PredictionResponse` JSON.
 
 ---
 
-## 🎨 Frontend
-Фронтенд реализован как отдельный Go‑сервис (`front/front.go`) на `gin`, по умолчанию слушает порт **8081**.
+## 🎨 Frontend (Production Ready)
+
+**Статус:** ✅ Production  
+**Технологии:** Go + Gin + HTML/JS + Chart.js  
+**Порт:** 8081  
+**Назначение:** User Interface — чат-интерфейс с AI Trading Assistant, визуализация прогнозов и торговых сигналов.
 
 ### Структура фронтенда
 
@@ -628,8 +658,9 @@ FastAPI‑сервис, который можно запустить на пор
      "date": "YYYY-MM-DD"
    }
    ```
-   и отправляется POST на `http://127.0.0.1:8080/predict` (или на Python‑адаптер, если Go‑бэкенд будет проксировать).
-4. Ответ ML‑сервиса маппится в структуру `MLResponse` (аналог `PredictionResponse`) и возвращается в браузер.
+   и отправляется POST на `http://127.0.0.1:8080/predict`.
+4. Go Backend загружает данные с MOEX и проксирует запрос к ML Engine (`http://127.0.0.1:8000/predict`).
+5. Ответ ML Engine маппится в структуру `MLResponse` и возвращается в браузер.
 5. JS‑код в `index.html`:
    - добавляет сообщение пользователя в историю чата;
    - рендерит ответ AI‑ассистента: текстовое объяснение, тренд, волатильность, торговый сигнал, ключевые фичи;
@@ -693,18 +724,39 @@ FastAPI‑сервис, который можно запустить на пор
 }
 ```
 
-Фронтенд и Go‑бэкенд таким образом выступают как UI‑/API‑прослойка над Python‑моделью, обеспечивая стабильный контракт и удобный трейдинговый интерфейс.
+### Полный поток запроса
+
+```
+User (Browser :8081)
+  ↓ POST /api/chat {"message": "SBER прогноз"}
+Frontend (Go :8081)
+  ↓ POST /predict {"ticker": "SBER", "horizon": 5, ...}
+Backend (Go :8080)
+  ↓ Fetch MOEX candles (365 days)
+  ↓ POST /predict {candles + metadata}
+ML Engine (Python :8000)
+  ↓ Feature Engineering (66 features)
+  ↓ Model Inference (LightGBM + GARCH)
+  ↓ Trading Signal Generation
+  ↓ SHAP Explanation
+  ↓ Return PredictionResponse JSON
+Backend → Frontend → User
+```
 
 ---
 
 ## 🚀 Установка
 
-### Требования
+### Системные требования
 
-- Python 3.12+
-- Windows / Linux / macOS
+- **Python:** 3.12+
+- **Go:** 1.21+
+- **OS:** Windows / Linux / macOS
+- **RAM:** 4GB+ (для загрузки моделей)
 
-### Быстрый старт
+### Быстрая установка зависимостей
+
+#### Python (ML Engine)
 
 ```bash
 # 1. Клонирование репозитория
@@ -712,10 +764,13 @@ git clone https://github.com/your-username/MOEXScanner.git
 cd MOEXScanner/ML
 
 # 2. Создание виртуального окружения
-python -m venv venv
+python -m venv .venv
 
-# 3. Активация (Windows PowerShell)
-.\venv\Scripts\Activate.ps1
+# 3. Активация
+# Windows PowerShell:
+.\.venv\Scripts\Activate.ps1
+# Linux/macOS:
+source .venv/bin/activate
 
 # 4. Установка зависимостей
 pip install -r requirements.txt
@@ -724,54 +779,108 @@ pip install -r requirements.txt
 python test_setup.py
 ```
 
-### Запуск всего проекта (ML + Python Adapter + Go Backend + Frontend)
+#### Go (Backend + Frontend)
 
-1. **ML‑окружение и модели**
-   - Перейти в директорию `ML` и активировать виртуальное окружение:
-     ```powershell
-     cd ML
-     .\venv\Scripts\Activate.ps1
-     ```
-   - Установить зависимости (если ещё не установлены):
-     ```powershell
-     pip install -r requirements.txt
-     ```
-   - Обучить или проверить наличие моделей в `ML/data/models` (при необходимости запустить `python scripts/run_full_pipeline.py`).
+```bash
+# Backend
+cd backend
+go mod tidy
 
-2. **Запуск Python‑адаптера (`app.py`)**
-   - Установить FastAPI и Uvicorn (один раз):
-     ```powershell
-     pip install fastapi "uvicorn[standard]"
-     ```
-   - Из корня репозитория (`MOEXScanner`) запустить сервис:
-     ```powershell
-     cd ..
-     python -m uvicorn app:app --host 0.0.0.0 --port 8000 --reload
-     ```
-   - Проверить `http://localhost:8000/health` — поле `model_loaded` должно быть `true`.
+# Frontend
+cd ../front
+go mod tidy
+```
 
-3. **Запуск Go Backend**
-   - Перейти в директорию `backend`:
-     ```powershell
-     cd backend
-     go mod tidy
-     go run back.go
-     ```
-   - По умолчанию сервер поднимется на `http://localhost:8080`.  
-     При интеграции с Python‑адаптером эндпоинт `POST /predict` можно перенастроить на `http://localhost:8000/predict`.
+---
 
-4. **Запуск Go Frontend**
-   - В отдельном терминале перейти в директорию `front`:
-     ```powershell
-     cd front
-     go mod tidy
-     go run front.go
-     ```
-   - Фронтенд будет доступен по адресу `http://localhost:8081`.
+## 🚀 Quick Start (Full System)
 
-5. **Полный поток**
-   - Пользователь открывает `http://localhost:8081` и общается с AI Trading Assistant.
-   - Frontend (`/api/chat`) → Go Backend (`/predict`) → Python Adapter (`/predict`) → `GlobalQuantileModel` → обратно в UI.
+Запустите систему в **3 терминала** (порядок важен!):
+
+### Terminal 1: Backend (Data Gateway)
+
+```bash
+cd backend
+go mod tidy
+go run back.go
+# Starts on http://localhost:8080
+```
+
+**Проверка:** `curl http://localhost:8080/health` → `{"status":"ok"}`
+
+---
+
+### Terminal 2: Frontend (UI)
+
+```bash
+# Open a new terminal
+cd front
+go mod tidy
+go run front.go
+# Starts on http://localhost:8081
+```
+
+**Проверка:** Откройте браузер → `http://localhost:8081`
+
+---
+
+### Terminal 3: ML Engine (AI Core)
+
+```bash
+# Open a new terminal
+cd ML/
+
+# Activate virtual environment
+# Windows:
+.venv\Scripts\Activate
+# Linux/macOS:
+source .venv/bin/activate
+
+# Start the model server
+uvicorn scripts.serve_model:app --host 127.0.0.1 --port 8000
+```
+
+**Проверка:** `curl http://localhost:8000/health` → `{"status":"healthy","model":"GlobalQuantileModel",...}`
+
+---
+
+### ✅ Система готова!
+
+Откройте браузер и перейдите на **http://localhost:8081**
+
+**Примеры запросов в чате:**
+- `SBER прогноз на 3 дня`
+- `GAZP волатильность на неделю`
+- `LKOH анализ`
+
+---
+
+### 🔧 Troubleshooting
+
+| Проблема | Решение |
+|----------|---------|
+| ML Engine: `Model not found` | Запустите `python scripts/run_full_pipeline.py` для обучения моделей |
+| Backend: `Connection refused :8000` | Убедитесь, что ML Engine запущен (Terminal 3) |
+| Frontend: `Cannot GET /` | Проверьте наличие `templates/index.html` в `front/` |
+
+---
+
+### 📦 Обучение моделей (первый запуск)
+
+Если моделей нет в `ML/data/models/`, выполните:
+
+```bash
+cd ML
+source .venv/bin/activate  # или .venv\Scripts\Activate (Windows)
+
+# Полный pipeline: Features → Training → Validation
+python scripts/run_full_pipeline.py
+
+# Только обучение (если features готовы)
+python scripts/run_full_pipeline.py --skip-features --preset MORE_TRAIN
+```
+
+**Время выполнения:** ~10-15 минут
 
 ### Зависимости
 
@@ -801,11 +910,34 @@ requests>=2.28.0   # Для загрузки данных с MOEX
 
 ## 📖 Использование
 
-### Запуск полного pipeline
+### Запуск Production системы
 
-```powershell
+После установки зависимостей запускайте систему в 3 терминала (см. [Quick Start](#-quick-start-full-system)).
+
+**Полный цикл запуска:**
+
+```bash
+# Terminal 1: Backend
+cd backend && go run back.go
+
+# Terminal 2: Frontend  
+cd front && go run front.go
+
+# Terminal 3: ML Engine
+cd ML && source .venv/bin/activate && uvicorn scripts.serve_model:app --host 127.0.0.1 --port 8000
+```
+
+Откройте браузер → **http://localhost:8081**
+
+---
+
+### ML Development (обучение и валидация)
+
+#### Полный ML Pipeline
+
+```bash
 cd ML
-venv\Scripts\activate
+source .venv/bin/activate  # Windows: .venv\Scripts\Activate
 
 # Полный цикл: Features → Training → Inference
 python scripts/run_full_pipeline.py
@@ -813,76 +945,86 @@ python scripts/run_full_pipeline.py
 # Только обучение (features готовы)
 python scripts/run_full_pipeline.py --skip-features --preset MORE_TRAIN
 
-# Только инференс
+# Только инференс для конкретного тикера
 python scripts/run_full_pipeline.py --skip-features --skip-training --ticker SBER
 ```
 
-### Валидация модели
+#### Валидация модели
 
-```powershell
+```bash
 python scripts/validate_model.py
 ```
 
-### Сравнение моделей
+#### Сравнение моделей
 
-```powershell
-# Сохраните старый отчёт
-copy reports\validation_report.csv reports\validation_report_baseline.csv
+```bash
+# Сохраните baseline отчёт
+cp reports/validation_report.csv reports/validation_report_baseline.csv
 
-# Обучите новую модель
+# Обучите новую модель с другими параметрами
 python scripts/run_full_pipeline.py --skip-features --preset REGULARIZED
 
-# Сравните
+# Сравните результаты
 python scripts/compare_models.py
 ```
 
-### Использование модели для прогноза
+---
+
+### Programmatic API Usage
+
+#### Python: Прямое использование модели
 
 ```python
-from inference import GlobalQuantileModel
+from ML.scripts.serve_model import MODEL
+from ML.features.feature_builder import build_dataframe
+import pandas as pd
 
-# Загрузка модели
-model = GlobalQuantileModel(use_ensemble=True)
-model.load_models()
+# Загрузить исторические данные
+df = pd.read_csv('ML/data/MOEX_DATA/SBER/1D/SBER.csv')
 
-# Прогноз
-predictions = model.predict_ensemble(new_data)
-# predictions: ['pred_q16', 'pred_q50', 'pred_q84', 'interval_width', ...]
+# Сгенерировать признаки
+X = build_dataframe(df, ticker='SBER', timeframe='D')
+
+# Inference (ensemble: LightGBM 70% + GARCH 30%)
+predictions = MODEL.predict_ensemble(X, returns=df['log_return'], return_components=True)
+
+print(predictions)
+# Output: {'pred_q16': 0.15, 'pred_q50': 0.22, 'pred_q84': 0.31, ...}
 ```
 
-### Настройка параметров
+#### HTTP API: Запрос к ML Engine
+
+```bash
+curl -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ticker": "SBER",
+    "horizon": 5,
+    "candles": [...],
+    "current_price": 280.5
+  }'
+```
+
+---
+
+### Настройка параметров обучения
 
 Все параметры обучения настраиваются в **одном файле**: `ML/config/training_config.py`
 
 ```python
-# Выберите пресет или измените параметры
+# Выберите пресет
 ACTIVE_PRESET = 'MORE_TRAIN'  # или BASELINE, REGULARIZED, NO_TICKER
 
-# Или измените напрямую:
+# Или измените параметры напрямую:
 TRAIN_CUTOFF_DATE = '2024-06-01'
 LGBM_PARAMS = {
     'num_leaves': 63,
     'learning_rate': 0.05,
-    'lambda_l1': 0.5,  # Регуляризация
+    'lambda_l1': 0.5,  # L1 регуляризация
+    'lambda_l2': 0.5,  # L2 регуляризация
     ...
 }
 ```
-
-
-# Пример полноценного запуска
-```
-cd ML/
-source .venv/bin/activate
-uvicorn scripts.serve_model:app --host 127.0.0.1 --port 8000
-
-cd backend/
-go run back.go
-
-cd front/
-go run front.go
-```
-
-go to http://127.0.0.1:8081/
 ---
 
 ## 📚 Документация

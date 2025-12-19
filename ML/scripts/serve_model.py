@@ -360,6 +360,30 @@ def predict_local(req: PredictRequest):
             trend_direction = "восходящий" if trend_is_up else "нисходящий"
             reason = f"Умный вход в канале волатильности ({trend_direction} тренд, R/R={rr_ratio:.2f})"
 
+        # 7. Контекст объёма (Volume Context)
+        # Извлекаем признаки объёма из фичей для фронтенда
+        try:
+            volume_zscore = float(X['volume_zscore_20'].iloc[0]) if 'volume_zscore_20' in X.columns else 0.0
+        except (KeyError, IndexError, TypeError):
+            volume_zscore = 0.0
+        
+        try:
+            volume_spike_raw = X['volume_spike'].iloc[0] if 'volume_spike' in X.columns else 0
+            # Конвертируем numpy bool/int в native Python bool для JSON
+            spike_detected = bool(int(volume_spike_raw))
+        except (KeyError, IndexError, TypeError):
+            spike_detected = False
+        
+        # poc_distance: используем placeholder 0.0 (vp_position может быть категориальным)
+        poc_distance = 0.0
+        
+        # va_position: определяем позицию цены относительно Value Area
+        try:
+            vp_above_va = X['vp_above_va'].iloc[0] if 'vp_above_va' in X.columns else 0
+            va_position = "above" if int(vp_above_va) == 1 else "inside/below"
+        except (KeyError, IndexError, TypeError):
+            va_position = "inside/below"
+        
         response = {
             "ticker": req.ticker,
             "horizon": req.horizon,
@@ -385,6 +409,12 @@ def predict_local(req: PredictRequest):
                 "stop_loss": stop_loss,
                 "position_size": 0.1,
                 "reason": reason
+            },
+            "volume_context": {
+                "zscore": volume_zscore,
+                "spike_detected": spike_detected,
+                "poc_distance": poc_distance,
+                "va_position": va_position
             },
             "raw_prediction": pred_row
         }
