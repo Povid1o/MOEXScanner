@@ -11,6 +11,9 @@ import (
 	"time"
 )
 
+// API_KEY для DeepSeek - загружаем из переменной окружения или используем пустую строку
+var API_KEY = os.Getenv("DEEPSEEK_API_KEY")
+
 type DeepSeekAnswer struct {
 	ID       string    `json:"id"`
 	Provider string    `json:"provider"`

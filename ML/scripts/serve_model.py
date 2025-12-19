@@ -47,6 +47,41 @@ sys.path.insert(0, str(ML_ROOT / "03_models"))
 app = FastAPI(title="MOEXScanner Local Model Server")
 
 
+@app.get("/")
+def root():
+    """Main page with API information"""
+    return {
+        "service": "MOEX Scanner ML Engine",
+        "version": "1.0.0",
+        "status": "running",
+        "model": "GlobalQuantileModel (LightGBM + GARCH Ensemble)",
+        "endpoints": {
+            "/health": "GET - Check server health and model status",
+            "/predict_local": "POST - Generate volatility predictions",
+            "/predict": "POST - Alias for /predict_local"
+        },
+        "usage": {
+            "frontend": "http://localhost:8081",
+            "backend": "http://localhost:8080",
+            "health_check": "http://127.0.0.1:8000/health"
+        },
+        "documentation": "http://127.0.0.1:8000/docs"
+    }
+
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint"""
+    global MODEL
+    return {
+        "status": "healthy",
+        "model": "GlobalQuantileModel",
+        "model_loaded": MODEL is not None,
+        "ensemble": "LightGBM (0.7) + GARCH (0.3)" if MODEL and MODEL.use_ensemble else "LightGBM only",
+        "features": len(MODEL.feature_names) if MODEL and hasattr(MODEL, 'feature_names') else 0
+    }
+
+
 class Candle(BaseModel):
     timestamp: Optional[str]
     open: float
@@ -210,7 +245,10 @@ def predict_local(req: PredictRequest):
         # Иначе используем только LightGBM
         if MODEL.use_ensemble and MODEL.ensemble is not None:
             # Ансамблевый прогноз: комбинирует LightGBM и GARCH
-            preds = MODEL.predict_ensemble(X, returns=df['log_return'], return_components=True)
+            # ВАЖНО: передаем только последние N строк returns, которые соответствуют X
+            # Для GARCH достаточно последних 60 значений
+            returns_for_garch = df['log_return'].tail(len(X))
+            preds = MODEL.predict_ensemble(X, returns=returns_for_garch, return_components=True)
         else:
             # Только LightGBM прогноз
             preds = MODEL.predict(X, return_interval=True)
@@ -380,8 +418,12 @@ def predict_local(req: PredictRequest):
         # va_position: определяем позицию цены относительно Value Area
         try:
             vp_above_va = X['vp_above_va'].iloc[0] if 'vp_above_va' in X.columns else 0
-            va_position = "above" if int(vp_above_va) == 1 else "inside/below"
-        except (KeyError, IndexError, TypeError):
+            # Обработка NaN: проверяем, что значение не NaN перед преобразованием
+            if pd.isna(vp_above_va) or pd.isnull(vp_above_va):
+                va_position = "inside/below"
+            else:
+                va_position = "above" if int(float(vp_above_va)) == 1 else "inside/below"
+        except (KeyError, IndexError, TypeError, ValueError):
             va_position = "inside/below"
         
         response = {
@@ -415,8 +457,7 @@ def predict_local(req: PredictRequest):
                 "spike_detected": spike_detected,
                 "poc_distance": poc_distance,
                 "va_position": va_position
-            },
-            "raw_prediction": pred_row
+            }
         }
         # attach explanation
         response['explanation'] = explanation_payload
@@ -425,7 +466,15 @@ def predict_local(req: PredictRequest):
 
     except Exception as e:
         tb = traceback.format_exc()
+        print(f"❌ ERROR in predict_local: {e}")
+        print(f"Full traceback:\n{tb}")
         raise HTTPException(status_code=500, detail={"error": str(e), "trace": tb})
+
+
+@app.post("/predict")
+def predict(req: PredictRequest):
+    """Alias for /predict_local for backward compatibility"""
+    return predict_local(req)
 
 
 if __name__ == '__main__':
