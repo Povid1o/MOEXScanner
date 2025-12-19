@@ -180,6 +180,31 @@ def predict_local(req: PredictRequest):
             # keep empty explanation_payload on failure
             pass
 
+        # determine action based on predicted quantiles
+        action = ("BUY" if current_price < pred_row.get('pred_q16', 0) else ("SELL" if current_price > pred_row.get('pred_q84', 0) else "HOLD"))
+
+        # set target and stop loss depending on action direction
+        if action == "BUY":
+            target = float(current_price * (1.0 + 0.05))
+            stop_loss = float(current_price * (1.0 - 0.03))
+        elif action == "SELL":
+            target = float(current_price * (1.0 - 0.05))
+            stop_loss = float(current_price * (1.0 + 0.03))
+        else:
+            target = None
+            stop_loss = None
+
+        # interpret model quantiles as relative predictions (returns/volatility)
+        pred_q16 = float(pred_row.get('pred_q16', 0))
+        pred_q50 = float(pred_row.get('pred_q50', 0))
+        pred_q84 = float(pred_row.get('pred_q84', 0))
+        pred_price_q16 = current_price * (1.0 + pred_q16)
+        pred_price_q50 = current_price * (1.0 + pred_q50)
+        pred_price_q84 = current_price * (1.0 + pred_q84)
+
+        # Decide action by comparing current price with predicted price quantiles
+        action = ("BUY" if pred_price_q84 > current_price else ("SELL" if pred_price_q16 < current_price else "HOLD"))
+
         response = {
             "ticker": req.ticker,
             "horizon": req.horizon,
@@ -192,19 +217,19 @@ def predict_local(req: PredictRequest):
             },
             "confidence": max(0.0, min(1.0, 1.0 - float(pred_row.get('interval_width', 0)) / (abs(current_price) + 1e-9))),
             "channel": {
-                "upper_2sigma": float(pred_row.get('pred_q84', 0) + pred_row.get('interval_width', 0)),
-                "upper_1sigma": float(pred_row.get('pred_q84', 0)),
+                "upper_2sigma": float(pred_price_q84 + pred_row.get('interval_width', 0)),
+                "upper_1sigma": float(pred_price_q84),
                 "current_price": current_price,
-                "lower_1sigma": float(pred_row.get('pred_q16', 0)),
-                "lower_2sigma": float(pred_row.get('pred_q16', 0) - pred_row.get('interval_width', 0)),
+                "lower_1sigma": float(pred_price_q16),
+                "lower_2sigma": float(pred_price_q16 - pred_row.get('interval_width', 0)),
             },
             "trading_signal": {
-                "action": ("BUY" if current_price < pred_row.get('pred_q16', 0) else ("SELL" if current_price > pred_row.get('pred_q84', 0) else "HOLD")),
+                "action": action,
                 "entry": current_price,
-                "target": float(current_price * (1.0 + 0.05)),
-                "stop_loss": float(current_price * (1.0 - 0.03)),
+                "target": (float(current_price * (1.0 + 0.05)) if action == "BUY" else (float(current_price * (1.0 - 0.05)) if action == "SELL" else None)),
+                "stop_loss": (float(current_price * (1.0 - 0.03)) if action == "BUY" else (float(current_price * (1.0 + 0.03)) if action == "SELL" else None)),
                 "position_size": 0.1,
-                "reason": "automatic-rule: compare current price with predicted quantiles"
+                "reason": "automatic-rule: compare current price with predicted price quantiles"
             },
             "raw_prediction": pred_row
         }
