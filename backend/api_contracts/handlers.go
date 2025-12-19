@@ -2,7 +2,6 @@ package apicontracts
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -67,7 +66,8 @@ func (h *PredictionHandler) Predict(c *gin.Context) {
 	}
 
 	// validate data user request
-	endDate, _ := time.Parse("2006-01-02", req.Date)
+	// use current date as the 'till' date to ensure latest price is included
+	endDate := time.Now()
 	startDate := endDate.AddDate(0, 0, -60)
 	candles, err := src.GetCandles(
 		req.Ticker,
@@ -90,90 +90,25 @@ func (h *PredictionHandler) Predict(c *gin.Context) {
 		return
 	}
 
-	// prepare prompt for ai
-	candlesJSON, _ := json.Marshal(candles)
+	// prepare structured payload for local prediction CLI
+	// send analysis date as current date to the model so features align with fetched candles
+	payload := map[string]interface{}{
+		"ticker":    req.Ticker,
+		"candles":   candles,
+		"timeframe": req.Timeframe,
+		"horizon":   req.Horizon,
+		"date":      endDate.Format("2006-01-02"),
+	}
 
-	// Обновленный промт с более четкими инструкциями
-	prompt := fmt.Sprintf(`
-Ты профессиональный финансовый аналитик. Проанализируй исторические данные акции и верни прогноз в ТОЧНОМ JSON формате ниже.
-
-ИСТОРИЧЕСКИЕ ДАННЫЕ АКЦИИ %s (в формате JSON):
-%s
-
-ПАРАМЕТРЫ АНАЛИЗА:
-- Таймфрейм: %s
-- Период прогноза: %d дней
-- Текущая дата анализа: %s
-
-ТРЕБУЕМЫЙ ФОРМАТ ОТВЕТА (ТОЛЬКО JSON, БЕЗ ЛЮБЫХ ДОПОЛНИТЕЛЬНЫХ ТЕКСТОВЫХ ПОЯСНЕНИЙ):
-
-{
-"ticker": "%s",
-"horizon": %d,
-"predicted_volatility": {
-  "median": число,
-  "lower_1sigma": число,
-  "upper_1sigma": число,
-  "lower_2sigma": число,
-  "upper_2sigma": число
-},
-"confidence": число_от_0_до_1,
-"trend": {
-  "direction": "uptrend/downtrend/sideways",
-  "confidence": "high/medium/low", 
-  "strength": число_от_0_до_1
-},
-"channel": {
-  "upper_2sigma": число,
-  "upper_1sigma": число,
-  "current_price": число,
-  "lower_1sigma": число,
-  "lower_2sigma": число
-},
-"trading_signal": {
-  "action": "BUY/SELL/HOLD",
-  "entry": число,
-  "target": число,
-  "stop_loss": число,
-  "position_size": число_от_0_до_1,
-  "reason": "краткое_обоснование"
-},
-"tail_risk": {
-  "warning": true/false,
-  "probability": число_от_0_до_1,
-  "expected_loss": число_или_null
-},
-"volume_context": {
-  "zscore": число_или_null,
-  "spike_detected": true/false,
-  "poc_distance": число_или_null,
-  "va_position": "inside/above/below"
-},
-"explanation": {
-  "text": "аналитический_вывод",
-  "top_features": [
-    {"name": "название_метрики", "value": число, "contribution": число},
-    {"name": "название_метрики", "value": число, "contribution": число},
-    {"name": "название_метрики", "value": число, "contribution": число}
-  ]
-}
-}
-
-ВАЖНО: 
-1. Верни ТОЛЬКО валидный JSON без каких-либо дополнительных текстовых комментариев, включая markdown разметки
-2. Все числовые значения должны быть числами (не строками)
-3. Не используй проценты в числовых значениях
-4. Убедись, что JSON синтаксически корректен
-5. Не оборачивай ответ в markdown блоки кода
-`, req.Ticker, string(candlesJSON), req.Timeframe, req.Horizon, req.Date, req.Ticker, req.Horizon)
-	// ai call
-	log.Println("[ai call]")
-	aiResponse, err := src.Ai_send_request("Financial Analyst", prompt)
+	log.Println("[local model CLI call]")
+	aiResponse, err := src.Ai_send_request_local(payload)
 	if err != nil {
-		log.Printf("AI request error: %v", err)
+		log.Printf("Local model error: %v", err)
+		// include output if available
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "Failed to get AI response",
+			"error":   "Failed to get local model response",
 			"details": err.Error(),
+			"output":  aiResponse,
 		})
 		return
 	}

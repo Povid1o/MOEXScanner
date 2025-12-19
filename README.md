@@ -868,6 +868,21 @@ LGBM_PARAMS = {
 }
 ```
 
+
+# Пример полноценного запуска
+```
+cd ML/
+source .venv/bin/activate
+uvicorn scripts.serve_model:app --host 127.0.0.1 --port 8000
+
+cd backend/
+go run back.go
+
+cd front/
+go run front.go
+```
+
+go to http://127.0.0.1:8081/
 ---
 
 ## 📚 Документация

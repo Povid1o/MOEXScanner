@@ -7,6 +7,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"time"
 )
 
 type DeepSeekAnswer struct {
@@ -92,4 +94,43 @@ func Ai_send_request(role string, text string) (string, error) { // if !role {ro
 
 	log.Print("[ai]: Что-то с AI не так")
 	return "False", fmt.Errorf("ai errror")
+}
+
+// Ai_send_request_local runs the local Python CLI that performs prediction.
+// It executes: python3 ../ML/scripts/predict_cli.py and pipes JSON to stdin.
+func Ai_send_request_local(payload map[string]interface{}) (string, error) {
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	// model server URL from env or default
+	url := os.Getenv("ML_MODEL_URL")
+	if url == "" {
+		url = "http://127.0.0.1:8000/predict_local"
+	}
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	if resp.StatusCode >= 400 {
+		return string(body), fmt.Errorf("model server returned status %d", resp.StatusCode)
+	}
+
+	return string(body), nil
 }
