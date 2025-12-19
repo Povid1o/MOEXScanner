@@ -68,7 +68,10 @@ func (h *PredictionHandler) Predict(c *gin.Context) {
 	// validate data user request
 	// use current date as the 'till' date to ensure latest price is included
 	endDate := time.Now()
-	startDate := endDate.AddDate(0, 0, -60)
+	// Загружаем 365 дней истории для ML-модели
+	// Необходимо для расчёта долгосрочных индикаторов (SMA-200, долгосрочная волатильность и т.д.)
+	// ML-модель требует минимум 200-250 точек данных для корректной генерации признаков
+	startDate := endDate.AddDate(0, 0, -365)
 	candles, err := src.GetCandles(
 		req.Ticker,
 		startDate.Format("2006-01-02"),

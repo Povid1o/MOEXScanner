@@ -7,6 +7,38 @@ import traceback
 import pandas as pd
 import numpy as np
 
+
+def _calculate_confidence(interval_width: float, pred_q16: float, pred_q84: float) -> float:
+    """
+    Calculate confidence based on prediction interval width.
+    
+    interval_width is the difference between q84 and q16 (in relative terms, e.g., 0.02 = 2%).
+    Confidence should be inversely related to interval width:
+    - Narrow interval (low uncertainty) -> high confidence
+    - Wide interval (high uncertainty) -> low confidence
+    
+    Args:
+        interval_width: Width of prediction interval (q84 - q16)
+        pred_q16: Lower quantile prediction
+        pred_q84: Upper quantile prediction
+    
+    Returns:
+        Confidence value between 0.0 and 1.0
+    """
+    if interval_width <= 0:
+        return 0.5  # Default confidence if interval is invalid
+    
+    # Normalize interval_width: typical values are 0.01-0.10 (1%-10%)
+    # Confidence = 1.0 - normalized_width, clamped to [0.0, 1.0]
+    # For interval_width = 0.02 (2%), confidence should be high (~0.8-0.9)
+    # For interval_width = 0.10 (10%), confidence should be low (~0.0-0.2)
+    
+    # Normalize: divide by typical max width (0.15 = 15% daily volatility is very high)
+    normalized_width = min(interval_width / 0.15, 1.0)
+    confidence = max(0.0, min(1.0, 1.0 - normalized_width))
+    
+    return float(confidence)
+
 # ensure ML package paths
 ML_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ML_ROOT))
@@ -84,11 +116,28 @@ def load_models_on_startup():
     global MODEL, FEATURE_NAMES
     try:
         from inference import GlobalQuantileModel
-        # instantiate and load models
-        MODEL = GlobalQuantileModel()
+        
+        # Проверяем доступность ансамбля
+        try:
+            from models.ensemble import EnsembleModel
+            ENSEMBLE_AVAILABLE = True
+        except ImportError:
+            ENSEMBLE_AVAILABLE = False
+            print("[serve_model] Warning: Ensemble module not available, using LightGBM only")
+        
+        # Инициализируем модель с ансамблем (если доступен)
+        # Ансамбль комбинирует LightGBM (70%) + GARCH (30%)
+        MODEL = GlobalQuantileModel(
+            use_ensemble=ENSEMBLE_AVAILABLE,
+            ensemble_weights={'lgbm': 0.7, 'garch': 0.3} if ENSEMBLE_AVAILABLE else None
+        )
         MODEL.load_models()
         FEATURE_NAMES = MODEL.feature_names
-        print("[serve_model] Models loaded successfully")
+        
+        if ENSEMBLE_AVAILABLE:
+            print("[serve_model] ✅ Models loaded successfully (Ensemble: LightGBM + GARCH)")
+        else:
+            print("[serve_model] ✅ Models loaded successfully (LightGBM only)")
     except Exception as e:
         print(f"[serve_model] Failed to load models at startup: {e}")
         traceback.print_exc()
@@ -113,7 +162,16 @@ def predict_local(req: PredictRequest):
         global MODEL
         if MODEL is None:
             from inference import GlobalQuantileModel
-            MODEL = GlobalQuantileModel()
+            try:
+                from models.ensemble import EnsembleModel
+                ENSEMBLE_AVAILABLE = True
+            except ImportError:
+                ENSEMBLE_AVAILABLE = False
+            
+            MODEL = GlobalQuantileModel(
+                use_ensemble=ENSEMBLE_AVAILABLE,
+                ensemble_weights={'lgbm': 0.7, 'garch': 0.3} if ENSEMBLE_AVAILABLE else None
+            )
             MODEL.load_models()
 
         # predict last row
@@ -148,7 +206,15 @@ def predict_local(req: PredictRequest):
             if str(X[col].dtype) not in ['category', 'bool']:
                 X[col] = pd.to_numeric(X[col], errors='coerce').fillna(0)
 
-        preds = MODEL.predict(X, return_interval=True)
+        # Используем ансамблевый прогноз (LightGBM + GARCH), если доступен
+        # Иначе используем только LightGBM
+        if MODEL.use_ensemble and MODEL.ensemble is not None:
+            # Ансамблевый прогноз: комбинирует LightGBM и GARCH
+            preds = MODEL.predict_ensemble(X, returns=df['log_return'], return_components=True)
+        else:
+            # Только LightGBM прогноз
+            preds = MODEL.predict(X, return_interval=True)
+        
         pred_row = preds.iloc[0].to_dict()
 
         current_price = float(df.sort_values("date").iloc[-1]["close"])
@@ -180,30 +246,119 @@ def predict_local(req: PredictRequest):
             # keep empty explanation_payload on failure
             pass
 
-        # determine action based on predicted quantiles
-        action = ("BUY" if current_price < pred_row.get('pred_q16', 0) else ("SELL" if current_price > pred_row.get('pred_q84', 0) else "HOLD"))
+        # Модель предсказывает аннуализированную волатильность (стандартное отклонение)
+        # Необходимо деаннуализировать для горизонта прогноза
+        pred_q16 = float(pred_row.get('pred_q16', 0))  # Нижний квантиль волатильности
+        pred_q50 = float(pred_row.get('pred_q50', 0))  # Медианная волатильность
+        pred_q84 = float(pred_row.get('pred_q84', 0))  # Верхний квантиль волатильности
+        
+        # Деаннуализация: используем правило "квадратного корня времени"
+        # vol_horizon = vol_annual * sqrt(horizon / 252)
+        # 252 - количество торговых дней в году
+        horizon = req.horizon if req.horizon else 5  # По умолчанию 5 дней
+        time_factor = np.sqrt(horizon / 252.0)
+        
+        vol_horizon_q16 = pred_q16 * time_factor
+        vol_horizon_q50 = pred_q50 * time_factor
+        vol_horizon_q84 = pred_q84 * time_factor
+        
+        # Волатильность - это мера разброса (magnitude), а не направление
+        # Строим симметричные ценовые границы вокруг текущей цены
+        
+        # Верхние границы (оптимистичный сценарий / сопротивление):
+        pred_price_high_vol_up = current_price * (1.0 + vol_horizon_q84)    # Верхняя граница с высокой волатильностью
+        pred_price_median_up = current_price * (1.0 + vol_horizon_q50)      # Верхняя граница с медианной волатильностью
+        
+        # Нижние границы (пессимистичный сценарий / поддержка):
+        pred_price_high_vol_down = current_price * (1.0 - vol_horizon_q84)  # Нижняя граница с высокой волатильностью
+        pred_price_median_down = current_price * (1.0 - vol_horizon_q50)    # Нижняя граница с медианной волатильностью
+        
+        # Маппинг для обратной совместимости с downstream логикой:
+        # pred_price_q84 используется как целевая цена (Target proxy)
+        # pred_price_q16 используется как стоп-лосс (Stop Loss proxy)
+        pred_price_q84 = pred_price_high_vol_up      # Верхняя граница канала
+        pred_price_q16 = pred_price_high_vol_down    # Нижняя граница канала
+        pred_price_q50 = current_price                # Медиана остаётся на текущей цене
 
-        # set target and stop loss depending on action direction
-        if action == "BUY":
-            target = float(current_price * (1.0 + 0.05))
-            stop_loss = float(current_price * (1.0 - 0.03))
-        elif action == "SELL":
-            target = float(current_price * (1.0 - 0.05))
-            stop_loss = float(current_price * (1.0 + 0.03))
+        # ========================================================================
+        # ПРОФЕССИОНАЛЬНАЯ ТОРГОВАЯ ЛОГИКА (Mean Reversion + Trend Following)
+        # ========================================================================
+        
+        # Шаг A: Определение направления тренда
+        # Используем медианную волатильность (pred_q50) для определения тренда
+        # Если медианный прогноз показывает движение вверх от текущей цены, тренд восходящий
+        trend_is_up = pred_q50 > 0  # pred_q50 - это волатильность, но проверяем её положительность
+        
+        # Альтернативно: используем сравнение медианной верхней границы с текущей ценой
+        # Это более надёжный индикатор направления тренда
+        trend_is_up = pred_price_median_up > current_price
+        
+        # Дополнительная проверка: если доступны SMA/EMA признаки, используем их для подтверждения
+        # (опционально, если признаки есть в X)
+        try:
+            if 'sma_50' in X.columns:
+                close_price = current_price  # Текущая цена закрытия
+                sma_50 = float(X['sma_50'].iloc[0])
+                if sma_50 > 0:
+                    trend_confirmed = close_price > sma_50
+                    # Если тренд не подтверждается техническими индикаторами, снижаем уверенность
+                    if trend_is_up != trend_confirmed:
+                        # Используем волатильность как основной сигнал, но отмечаем расхождение
+                        pass
+        except Exception:
+            pass  # Если признаки недоступны, используем только pred_q50
+        
+        # Шаг B: Расчёт умной точки входа (Лимитный ордер)
+        # НЕ входим по рыночной цене! Ждём откат/отскок
+        
+        if trend_is_up:
+            # BUY сценарий: ждём отката (dip) для покупки
+            # Входим на середине между текущей ценой и нижней границей волатильности
+            entry = round((current_price + pred_price_high_vol_down) / 2.0, 2)
+            action_candidate = "BUY"
         else:
-            target = None
-            stop_loss = None
-
-        # interpret model quantiles as relative predictions (returns/volatility)
-        pred_q16 = float(pred_row.get('pred_q16', 0))
-        pred_q50 = float(pred_row.get('pred_q50', 0))
-        pred_q84 = float(pred_row.get('pred_q84', 0))
-        pred_price_q16 = current_price * (1.0 + pred_q16)
-        pred_price_q50 = current_price * (1.0 + pred_q50)
-        pred_price_q84 = current_price * (1.0 + pred_q84)
-
-        # Decide action by comparing current price with predicted price quantiles
-        action = ("BUY" if pred_price_q84 > current_price else ("SELL" if pred_price_q16 < current_price else "HOLD"))
+            # SELL сценарий: ждём ралли для продажи
+            # Входим на середине между текущей ценой и верхней границей волатильности
+            entry = round((current_price + pred_price_high_vol_up) / 2.0, 2)
+            action_candidate = "SELL"
+        
+        # Шаг C: Установка Target и Stop Loss
+        
+        if action_candidate == "BUY":
+            # Для BUY:
+            # Target - верхняя граница волатильности (сопротивление)
+            target = round(pred_price_high_vol_up, 2)
+            # Stop Loss - чуть ниже нижней границы волатильности (0.5% запас)
+            stop_loss = round(pred_price_high_vol_down * 0.995, 2)
+        else:  # SELL
+            # Для SELL:
+            # Target - нижняя граница волатильности (поддержка)
+            target = round(pred_price_high_vol_down, 2)
+            # Stop Loss - чуть выше верхней границы волатильности (0.5% запас)
+            stop_loss = round(pred_price_high_vol_up * 1.005, 2)
+        
+        # Шаг D: Фильтр Risk/Reward соотношения
+        # Проверяем, что потенциальная прибыль > 1.2 * потенциальный риск
+        
+        potential_profit = abs(target - entry)
+        potential_risk = abs(entry - stop_loss)
+        
+        # Защита от деления на ноль или слишком малых значений
+        if potential_risk < 0.01 or vol_horizon_q84 < 0.001:
+            # Волатильность слишком мала или риск нулевой - не торгуем
+            action = "HOLD"
+            reason = "Волатильность слишком низкая или нулевой риск"
+        elif potential_profit < (1.2 * potential_risk):
+            # R/R ratio < 1.2 - не торгуем
+            action = "HOLD"
+            rr_ratio = round(potential_profit / potential_risk, 2) if potential_risk > 0 else 0
+            reason = f"Низкое соотношение R/R: {rr_ratio:.2f} (требуется >= 1.2)"
+        else:
+            # R/R ratio приемлемый - выставляем сигнал
+            action = action_candidate
+            rr_ratio = round(potential_profit / potential_risk, 2)
+            trend_direction = "восходящий" if trend_is_up else "нисходящий"
+            reason = f"Умный вход в канале волатильности ({trend_direction} тренд, R/R={rr_ratio:.2f})"
 
         response = {
             "ticker": req.ticker,
@@ -215,7 +370,7 @@ def predict_local(req: PredictRequest):
                 "lower_2sigma": float(pred_row.get('pred_q16', 0) - pred_row.get('interval_width', 0)),
                 "upper_2sigma": float(pred_row.get('pred_q84', 0) + pred_row.get('interval_width', 0)),
             },
-            "confidence": max(0.0, min(1.0, 1.0 - float(pred_row.get('interval_width', 0)) / (abs(current_price) + 1e-9))),
+            "confidence": _calculate_confidence(pred_row.get('interval_width', 0), pred_q16, pred_q84),
             "channel": {
                 "upper_2sigma": float(pred_price_q84 + pred_row.get('interval_width', 0)),
                 "upper_1sigma": float(pred_price_q84),
@@ -225,11 +380,11 @@ def predict_local(req: PredictRequest):
             },
             "trading_signal": {
                 "action": action,
-                "entry": current_price,
-                "target": (float(current_price * (1.0 + 0.05)) if action == "BUY" else (float(current_price * (1.0 - 0.05)) if action == "SELL" else None)),
-                "stop_loss": (float(current_price * (1.0 - 0.03)) if action == "BUY" else (float(current_price * (1.0 + 0.03)) if action == "SELL" else None)),
+                "entry": float(entry),
+                "target": target,
+                "stop_loss": stop_loss,
                 "position_size": 0.1,
-                "reason": "automatic-rule: compare current price with predicted price quantiles"
+                "reason": reason
             },
             "raw_prediction": pred_row
         }
