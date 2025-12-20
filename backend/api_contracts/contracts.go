@@ -5,12 +5,11 @@ import (
 )
 
 func SetupRoutes(router *gin.Engine, handlers *Handlers) {
-	// Root endpoint
 	router.GET("/", func(c *gin.Context) {
 		c.JSON(200, gin.H{
-			"service":    "MOEX Scanner Backend API Gateway",
-			"version":    "1.0.0",
-			"status":     "running",
+			"service": "MOEX Scanner Backend API Gateway",
+			"version": "1.0.0",
+			"status":  "running",
 			"endpoints": gin.H{
 				"/health":           "GET - Check server health",
 				"/predict":          "POST - Generate predictions (proxies to ML Engine)",
@@ -25,12 +24,8 @@ func SetupRoutes(router *gin.Engine, handlers *Handlers) {
 			},
 		})
 	})
-
-	// GET endpoints
 	router.GET("/health", handlers.Health.CheckHealth)
 	router.GET("/features/:ticker", handlers.Features.GetFeatures)
-
-	// POST endpoints
 	router.POST("/predict", handlers.Prediction.Predict)
 	router.POST("/backtest", handlers.Backtest.RunBacktest)
 	router.POST("/update_data", handlers.Data.UpdateData)

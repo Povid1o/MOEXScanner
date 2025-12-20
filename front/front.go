@@ -12,7 +12,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Структуры для ответа от ML сервера
 type PredictedVolatility struct {
 	Median      float64 `json:"median"`
 	Lower1Sigma float64 `json:"lower_1sigma"`
@@ -81,12 +80,10 @@ type MLResponse struct {
 	Explanation         Explanation         `json:"explanation"`
 }
 
-// Структура для запроса от фронта
 type UserRequest struct {
 	Message string `json:"message"`
 }
 
-// Структура для запроса к ML серверу (как ожидает PredictionHandler)
 type MLRequest struct {
 	Ticker    string `json:"ticker"`
 	Timeframe string `json:"timeframe"`
@@ -96,13 +93,9 @@ type MLRequest struct {
 
 func main() {
 	router := gin.Default()
-
-	// Устанавливаем режим релиза, чтобы убрать предупреждение
 	gin.SetMode(gin.ReleaseMode)
-
 	router.LoadHTMLGlob("templates/*")
 
-	// Middleware для CORS
 	router.Use(func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
@@ -116,12 +109,10 @@ func main() {
 		c.Next()
 	})
 
-	// Главная страница
 	router.GET("/", func(c *gin.Context) {
 		c.HTML(http.StatusOK, "index.html", gin.H{})
 	})
 
-	// Эндпоинт для обработки сообщений от пользователя
 	router.POST("/api/chat", func(c *gin.Context) {
 		var req UserRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -131,21 +122,17 @@ func main() {
 
 		fmt.Printf("Получен запрос: %s\n", req.Message)
 
-		// Парсим сообщение пользователя
 		ticker, horizon := parseUserMessage(req.Message)
 
-		// Формируем запрос к ML серверу в правильном формате
 		mlReq := MLRequest{
 			Ticker:    ticker,
-			Timeframe: "D", // по умолчанию дневной таймфрейм
+			Timeframe: "D",
 			Horizon:   horizon,
 			Date:      time.Now().Format("2006-01-02"),
 		}
 
-		// Проксируем запрос к ML серверу (127.0.0.1:8080)
 		mlResponse, err := forwardToMLServer(mlReq)
 		if err != nil {
-			// Если ML сервер не доступен, возвращаем тестовые данные
 			fmt.Printf("Ошибка подключения к ML серверу: %v\n", err)
 			mlResponse = getMockResponse(ticker, horizon)
 		}
@@ -157,15 +144,10 @@ func main() {
 	router.Run(":8081")
 }
 
-// Парсим сообщение пользователя для извлечения тикера и горизонта
 func parseUserMessage(message string) (string, int) {
 	message = strings.ToUpper(message)
-
-	// Список тикеров
 	tickers := []string{"SBER", "GAZP", "LKOH", "ROSN", "VTBR", "ALRS", "GMKN", "NVTK", "TATN", "YNDX"}
-
-	// Ищем тикер в сообщении
-	ticker := "SBER" // по умолчанию
+	ticker := "SBER"
 	for _, t := range tickers {
 		if strings.Contains(message, t) {
 			ticker = t
@@ -173,14 +155,12 @@ func parseUserMessage(message string) (string, int) {
 		}
 	}
 
-	// Определяем горизонт
-	horizon := 3 // по умолчанию 3 дня
+	horizon := 3
 	if strings.Contains(message, "НЕДЕЛ") || strings.Contains(message, "WEEK") {
 		horizon = 7
 	} else if strings.Contains(message, "МЕСЯЦ") || strings.Contains(message, "MONTH") {
 		horizon = 30
 	} else {
-		// Пытаемся найти цифры в сообщении
 		for i := 1; i <= 365; i++ {
 			if strings.Contains(message, fmt.Sprintf("%d", i)) {
 				horizon = i
@@ -192,9 +172,7 @@ func parseUserMessage(message string) (string, int) {
 	return ticker, horizon
 }
 
-// Функция для отправки запроса к ML серверу в правильном формате
 func forwardToMLServer(mlReq MLRequest) (*MLResponse, error) {
-	// Формируем правильный запрос для PredictionHandler
 	jsonData, err := json.Marshal(mlReq)
 	if err != nil {
 		return nil, fmt.Errorf("ошибка маршалинга запроса: %v", err)
@@ -202,9 +180,8 @@ func forwardToMLServer(mlReq MLRequest) (*MLResponse, error) {
 
 	fmt.Printf("Отправка запроса к ML серверу: %s\n", string(jsonData))
 
-	// Увеличиваем таймаут до 5 минут (300 секунд)
 	client := &http.Client{
-		Timeout: 300 * time.Second, // 5 минут
+		Timeout: 300 * time.Second,
 	}
 
 	resp, err := client.Post("http://127.0.0.1:8080/predict",
@@ -215,7 +192,6 @@ func forwardToMLServer(mlReq MLRequest) (*MLResponse, error) {
 	}
 	defer resp.Body.Close()
 
-	// Проверяем статус ответа
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("ML сервер вернул ошибку %d: %s", resp.StatusCode, string(bodyBytes))
@@ -230,7 +206,6 @@ func forwardToMLServer(mlReq MLRequest) (*MLResponse, error) {
 
 	var mlResponse MLResponse
 	if err := json.Unmarshal(body, &mlResponse); err != nil {
-		// Пробуем очистить JSON от лишних символов
 		cleanedBody := cleanJSON(string(body))
 		if err2 := json.Unmarshal([]byte(cleanedBody), &mlResponse); err2 != nil {
 			return nil, fmt.Errorf("ошибка парсинга JSON ответа: %v (после очистки: %v)", err, err2)
@@ -240,29 +215,18 @@ func forwardToMLServer(mlReq MLRequest) (*MLResponse, error) {
 	return &mlResponse, nil
 }
 
-// Функция для очистки JSON ответа
 func cleanJSON(jsonStr string) string {
-	// Удаляем markdown блоки кода
 	jsonStr = strings.TrimSpace(jsonStr)
-
-	// Удаляем ```json в начале
 	if strings.HasPrefix(jsonStr, "```json") {
 		jsonStr = strings.TrimPrefix(jsonStr, "```json")
 	}
-
-	// Удаляем ``` в начале и конце
 	jsonStr = strings.TrimPrefix(jsonStr, "```")
 	jsonStr = strings.TrimSuffix(jsonStr, "```")
-
-	// Удаляем лишние пробелы
 	jsonStr = strings.TrimSpace(jsonStr)
-
 	return jsonStr
 }
 
-// Функция возвращает тестовые данные, если ML сервер не доступен
 func getMockResponse(ticker string, horizon int) *MLResponse {
-	// Базовые цены для разных тикеров
 	priceMap := map[string]float64{
 		"SBER": 280.5,
 		"GAZP": 160.3,

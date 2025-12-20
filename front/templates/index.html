@@ -467,54 +467,48 @@
     <script>
         let priceChart = null;
         let isProcessing = false;
-        
-        // Устанавливаем timestamp приветственного сообщения
+
         document.getElementById('welcomeTimestamp').textContent = getCurrentTime();
-        
-        // Обработчик нажатия кнопки отправки
+
         document.getElementById('sendButton').addEventListener('click', sendMessage);
-        
-        // Обработчик нажатия Enter в поле ввода
+
         document.getElementById('messageInput').addEventListener('keypress', function(e) {
             if (e.key === 'Enter' && !e.shiftKey && !isProcessing) {
                 e.preventDefault();
                 sendMessage();
             }
         });
-        
+
         function sendMessage() {
             if (isProcessing) return;
-            
+
             const input = document.getElementById('messageInput');
             const message = input.value.trim();
-            
+
             if (!message) {
                 showStatus('Введите сообщение', 'error');
                 return;
             }
-            
+
             isProcessing = true;
             const sendButton = document.getElementById('sendButton');
             sendButton.disabled = true;
             sendButton.textContent = 'Отправка...';
-            
-            // Добавляем сообщение пользователя
+
             addUserMessage(message);
             input.value = '';
-            
-            // Показываем индикатор загрузки
+
             showLoading(true);
             showStatus('Отправка запроса на анализ...', 'info');
-            
-            // Отправляем запрос на сервер
+
             sendToServer(message);
         }
-        
+
         function addUserMessage(text) {
             const chatHistory = document.getElementById('chatHistory');
             const messageDiv = document.createElement('div');
             messageDiv.className = 'message user-message';
-            
+
             messageDiv.innerHTML = `
                 <div class="message-header">
                     <span>👤 Вы</span>
@@ -522,27 +516,25 @@
                 </div>
                 <div class="message-content">${escapeHtml(text)}</div>
             `;
-            
+
             chatHistory.appendChild(messageDiv);
             chatHistory.scrollTop = chatHistory.scrollHeight;
-            
-            // Показываем статус
+
             showStatus('Сообщение отправлено. Ожидание ответа...', 'info');
         }
-        
+
         function addAiMessage(data) {
             const chatHistory = document.getElementById('chatHistory');
             const messageDiv = document.createElement('div');
             messageDiv.className = 'message ai-message';
-            
+
             const confidencePercent = Math.round(data.confidence * 100);
             const trendClass = getTrendClass(data.trend.direction);
             const signalClass = `signal-${data.trading_signal.action.toLowerCase()}`;
-            
-            // Форматируем цены
+
             const formatPrice = (price) => price.toFixed(2);
             const formatPercent = (value) => (value * 100).toFixed(2) + '%';
-            
+
             messageDiv.innerHTML = `
                 <div class="message-header">
                     <span>🤖 AI Assistant</span>
@@ -550,12 +542,12 @@
                 </div>
                 <div class="message-content">
                     <strong>📈 ${data.ticker.toUpperCase()} | Прогноз на ${data.horizon} дней</strong><br><br>
-                    
+
                     <div style="margin-bottom: 10px; padding: 10px; background: #f8fafc; border-radius: 8px;">
                         <strong>📊 Общий анализ:</strong><br>
                         ${data.explanation.text}
                     </div>
-                    
+
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin: 15px 0;">
                         <div>
                             <strong>📈 Тренд:</strong><br>
@@ -569,7 +561,7 @@
                             Причина: ${data.trading_signal.reason}
                         </div>
                     </div>
-                    
+
                     <div style="margin: 15px 0;">
                         <strong>📉 Волатильность:</strong><br>
                         <div class="confidence-bar">
@@ -579,7 +571,7 @@
                         Диапазон (±1σ): ${formatPercent(data.predicted_volatility.lower_1sigma)} - ${formatPercent(data.predicted_volatility.upper_1sigma)}<br>
                         Диапазон (±2σ): ${formatPercent(data.predicted_volatility.lower_2sigma)} - ${formatPercent(data.predicted_volatility.upper_2sigma)}
                     </div>
-                    
+
                     <div style="margin: 15px 0;">
                         <strong>💰 Ценовые уровни:</strong><br>
                         <span class="price-level price-level-1">+2σ: ${formatPrice(data.channel.upper_2sigma)}</span>
@@ -588,7 +580,7 @@
                         <span class="price-level price-level-4">-1σ: ${formatPrice(data.channel.lower_1sigma)}</span>
                         <span class="price-level price-level-5">-2σ: ${formatPrice(data.channel.lower_2sigma)}</span>
                     </div>
-                    
+
                     <div style="margin: 15px 0;">
                         <strong>🎯 Торговые параметры:</strong><br>
                         • Вход: ${formatPrice(data.trading_signal.entry)}<br>
@@ -596,7 +588,7 @@
                         • Стоп-лосс: ${formatPrice(data.trading_signal.stop_loss)}<br>
                         • Размер позиции: ${(data.trading_signal.position_size * 100).toFixed(0)}%
                     </div>
-                    
+
                     ${data.tail_risk.warning ? `
                     <div style="margin: 15px 0; padding: 10px; background: #fef2f2; border-radius: 8px; border: 1px solid #fecaca;">
                         <strong>⚠️ Внимание: Хвостовой риск!</strong><br>
@@ -604,7 +596,7 @@
                         ${data.tail_risk.expected_loss ? `Ожидаемые потери: ${data.tail_risk.expected_loss}` : ''}
                     </div>
                     ` : ''}
-                    
+
                     <div class="features-list">
                         <strong>📊 Ключевые факторы:</strong>
                         ${data.explanation.top_features.map(feature => `
@@ -616,20 +608,16 @@
                     </div>
                 </div>
             `;
-            
+
             chatHistory.appendChild(messageDiv);
             chatHistory.scrollTop = chatHistory.scrollHeight;
-            
-            // Обновляем боковую панель
+
             updateTradingPanel(data);
-            
-            // Обновляем график
             updateChart(data);
-            
-            // Показываем статус успеха
+
             showStatus(`Анализ ${data.ticker.toUpperCase()} завершен!`, 'success');
         }
-        
+
         function sendToServer(message) {
             fetch('/api/chat', {
                 method: 'POST',
@@ -659,17 +647,16 @@
                 sendButton.disabled = false;
                 sendButton.textContent = 'Отправить';
                 showLoading(false);
-                
-                // Фокус на поле ввода
+
                 document.getElementById('messageInput').focus();
             });
         }
-        
+
         function addErrorMessage(text) {
             const chatHistory = document.getElementById('chatHistory');
             const messageDiv = document.createElement('div');
             messageDiv.className = 'message ai-message';
-            
+
             messageDiv.innerHTML = `
                 <div class="message-header">
                     <span>⚠️ Ошибка</span>
@@ -680,35 +667,35 @@
                     <small>Проверьте, запущен ли ML сервер на порту 8080, и попробуйте снова.</small>
                 </div>
             `;
-            
+
             chatHistory.appendChild(messageDiv);
             chatHistory.scrollTop = chatHistory.scrollHeight;
         }
-        
+
         function updateTradingPanel(data) {
             const formatPrice = (price) => price ? price.toFixed(2) : '-';
             const confidencePercent = data.confidence ? (data.confidence * 100).toFixed(1) + '%' : '-';
-            
+
             document.getElementById('signalAction').textContent = data.trading_signal.action || '-';
             document.getElementById('signalAction').className = `signal-${(data.trading_signal.action || '').toLowerCase()}`;
-            
+
             document.getElementById('signalEntry').textContent = formatPrice(data.trading_signal.entry);
             document.getElementById('signalTarget').textContent = formatPrice(data.trading_signal.target);
             document.getElementById('signalStopLoss').textContent = formatPrice(data.trading_signal.stop_loss);
             document.getElementById('signalConfidence').textContent = confidencePercent;
-            
+
             const trendElement = document.getElementById('signalTrend');
             trendElement.textContent = data.trend.direction || '-';
             trendElement.className = getTrendClass(data.trend.direction);
         }
-        
+
         function updateChart(data) {
             const ctx = document.getElementById('priceChart').getContext('2d');
-            
+
             if (priceChart) {
                 priceChart.destroy();
             }
-            
+
             const labels = ['-2σ', '-1σ', 'Текущая', '+1σ', '+2σ'];
             const values = [
                 data.channel.lower_2sigma,
@@ -717,9 +704,9 @@
                 data.channel.upper_1sigma,
                 data.channel.upper_2sigma
             ];
-            
+
             const colors = ['#ef4444', '#f97316', '#3b82f6', '#10b981', '#8b5cf6'];
-            
+
             priceChart = new Chart(ctx, {
                 type: 'bar',
                 data: {
@@ -810,11 +797,11 @@
                 }
             });
         }
-        
+
         function showLoading(show) {
             document.getElementById('loading').style.display = show ? 'block' : 'none';
         }
-        
+
         function showStatus(message, type) {
             const statusElement = document.getElementById('statusMessage');
             statusElement.textContent = message;
@@ -822,15 +809,14 @@
                                      type === 'success' ? 'success-message' : 
                                      type + '-message';
             statusElement.style.display = 'block';
-            
-            // Скрываем сообщение через 5 секунд
+
             if (type !== 'error') {
                 setTimeout(() => {
                     statusElement.style.display = 'none';
                 }, 5000);
             }
         }
-        
+
         function getCurrentTime() {
             const now = new Date();
             return now.toLocaleTimeString('ru-RU', {
@@ -839,7 +825,7 @@
                 second: '2-digit'
             });
         }
-        
+
         function getTrendClass(direction) {
             switch(direction?.toLowerCase()) {
                 case 'uptrend': return 'trend-up';
@@ -848,7 +834,7 @@
                 default: return '';
             }
         }
-        
+
         function formatFeatureName(name) {
             const featureNames = {
                 'realized_vol_20': 'Реализованная волатильность (20 дн.)',
@@ -864,14 +850,13 @@
             };
             return featureNames[name] || name;
         }
-        
+
         function escapeHtml(text) {
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
         }
-        
-        // Инициализация пустого графика
+
         window.onload = function() {
             const ctx = document.getElementById('priceChart').getContext('2d');
             priceChart = new Chart(ctx, {
@@ -916,8 +901,7 @@
                     }
                 }
             });
-            
-            // Фокус на поле ввода
+
             document.getElementById('messageInput').focus();
         };
     </script>

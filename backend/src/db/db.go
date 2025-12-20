@@ -74,21 +74,13 @@ func CreateAllTables(db *sql.DB) error {
 }
 
 func Db_connect() *sql.DB {
-	// connection string
 	psqlconn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
 		host, port, user, password, dbname)
-
-	// open database
 	db, err := sql.Open("postgres", psqlconn)
 	checkError(err)
-
-	// check db connection FIRST
 	err = db.Ping()
 	checkError(err)
-
 	fmt.Println("Connected!")
-
-	// THEN create tables
 	err = CreateAllTables(db)
 	checkError(err)
 

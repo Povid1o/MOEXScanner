@@ -11,9 +11,6 @@ import (
 	"time"
 )
 
-// API_KEY для DeepSeek - загружаем из переменной окружения или используем пустую строку
-var API_KEY = os.Getenv("DEEPSEEK_API_KEY")
-
 type DeepSeekAnswer struct {
 	ID       string    `json:"id"`
 	Provider string    `json:"provider"`
@@ -42,7 +39,7 @@ func CheckError(err error) {
 	}
 }
 
-func Ai_send_request(role string, text string) (string, error) { // if !role {role = "user"}
+func Ai_send_request(role string, text string) (string, error) {
 	url := "https://openrouter.ai/api/v1/chat/completions"
 	payload := map[string]interface{}{
 		"model": "tngtech/deepseek-r1t2-chimera:free",
@@ -54,7 +51,6 @@ func Ai_send_request(role string, text string) (string, error) { // if !role {ro
 		},
 	}
 
-	// Сериализация в JSON
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal JSON: %w", err)
@@ -99,15 +95,12 @@ func Ai_send_request(role string, text string) (string, error) { // if !role {ro
 	return "False", fmt.Errorf("ai errror")
 }
 
-// Ai_send_request_local runs the local Python CLI that performs prediction.
-// It executes: python3 ../ML/scripts/predict_cli.py and pipes JSON to stdin.
 func Ai_send_request_local(payload map[string]interface{}) (string, error) {
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
-	// model server URL from env or default
 	url := os.Getenv("ML_MODEL_URL")
 	if url == "" {
 		url = "http://127.0.0.1:8000/predict_local"

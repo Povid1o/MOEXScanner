@@ -5,12 +5,9 @@ import (
 	"strings"
 )
 
-// Улучшенная функция очистки ответа от AI
+// cleanAIResponse удаляет оболочку и лишние символы вокруг JSON-ответа от AI
 func cleanAIResponse(response string) string {
-	// Удаляем все пробелы в начале и конце
 	response = strings.TrimSpace(response)
-
-	// Удаляем markdown code blocks полностью
 	if strings.HasPrefix(response, "```json") {
 		response = strings.TrimPrefix(response, "```json")
 	} else if strings.HasPrefix(response, "```") {
@@ -20,17 +17,11 @@ func cleanAIResponse(response string) string {
 	if strings.HasSuffix(response, "```") {
 		response = strings.TrimSuffix(response, "```")
 	}
-
-	// Снова удаляем пробелы
 	response = strings.TrimSpace(response)
-
-	// Ищем начало JSON (первая фигурная скобка)
 	startIdx := strings.Index(response, "{")
 	if startIdx > 0 {
 		response = response[startIdx:]
 	}
-
-	// Ищем конец JSON (последняя фигурная скобка)
 	endIdx := strings.LastIndex(response, "}")
 	if endIdx >= 0 && endIdx < len(response)-1 {
 		response = response[:endIdx+1]
@@ -39,17 +30,12 @@ func cleanAIResponse(response string) string {
 	return strings.TrimSpace(response)
 }
 
-// Функция для исправления распространенных проблем с JSON
+// fixCommonJSONIssues исправляет типичные проблемные паттерны в JSON-строке
 func fixCommonJSONIssues(jsonStr string) string {
-	// Заменяем проценты на числа
 	rePercent := regexp.MustCompile(`"([^"]+)":\s*"([\d.]+)%"`)
 	jsonStr = rePercent.ReplaceAllString(jsonStr, `"$1": $2`)
-
-	// Исправляем возможные проблемы с числами
 	reInvalidNumber := regexp.MustCompile(`"([^"]+)":\s*([\d.]+),?\s*%`)
 	jsonStr = reInvalidNumber.ReplaceAllString(jsonStr, `"$1": $2`)
-
-	// Удаляем лишние запятые в конце массивов и объектов
 	reTrailingComma := regexp.MustCompile(`,(\s*[}\]])`)
 	for reTrailingComma.MatchString(jsonStr) {
 		jsonStr = reTrailingComma.ReplaceAllString(jsonStr, "$1")
@@ -58,9 +44,8 @@ func fixCommonJSONIssues(jsonStr string) string {
 	return jsonStr
 }
 
-// Функция возвращает fallback данные если парсинг не удался
+// getFallbackResponse строит запасной ответ, если парсинг ответа AI не удался
 func getFallbackResponse(ticker string, horizon int, aiResponse string, err error) *PredictionResponse {
-	// Берем последние исторические данные для расчета
 	currentPrice := 123.4
 	if strings.Contains(ticker, "SBER") {
 		currentPrice = 280.5

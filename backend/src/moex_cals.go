@@ -8,7 +8,7 @@ import (
 	"os"
 )
 
-func List() { //топ по ликвидности
+func List() {
 	url := "https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities.json?sort_column=VALTODAY&sort_order=desc&limit=30"
 
 	req, err := http.NewRequest("GET", url, nil)
@@ -72,7 +72,6 @@ type Candle struct {
 	Ticker    string  `json:"ticker"`
 }
 
-// get historical info by switches from moex
 func GetCandles(ticker, from, till string, interval int) ([]Candle, error) {
 	url := fmt.Sprintf(
 		"https://iss.moex.com/iss/engines/stock/markets/shares/securities/%s/candles.json?from=%s&till=%s&interval=%d",
